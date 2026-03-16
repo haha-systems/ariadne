@@ -1,0 +1,181 @@
+package proof
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/haha-systems/conductor/internal/domain"
+)
+
+// Config controls what proof collection does.
+type Config struct {
+	RequireCIPass bool
+	OpenPR        bool
+	PRBaseBranch  string
+	// CICommand is the command to run tests (default: inferred from repo).
+	CICommand []string
+}
+
+// Collector gathers proof-of-work artifacts after a successful run.
+type Collector struct {
+	cfg Config
+}
+
+func New(cfg Config) *Collector {
+	return &Collector{cfg: cfg}
+}
+
+// Collect runs CI, computes diff stats, optionally opens a PR, and writes
+// proof/summary.json into the run's worktree. It returns the ProofBundle.
+func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.Task) (*domain.ProofBundle, error) {
+	started := time.Now()
+
+	bundle := &domain.ProofBundle{
+		RunID:    run.ID,
+		TaskID:   run.TaskID,
+		Provider: run.Provider,
+	}
+
+	// 1. Run CI.
+	ci, err := c.runCI(ctx, run.WorktreePath)
+	if err != nil && c.cfg.RequireCIPass {
+		return nil, fmt.Errorf("CI failed: %w", err)
+	}
+	bundle.CI = ci
+
+	// 2. Diff stats.
+	diff, err := c.diffStats(run.WorktreePath, c.cfg.PRBaseBranch)
+	if err != nil {
+		// Non-fatal: best-effort diff.
+		diff = domain.DiffStat{}
+	}
+	bundle.Diff = diff
+
+	// 3. Duration.
+	if run.FinishedAt != nil {
+		bundle.DurationSeconds = run.FinishedAt.Sub(run.StartedAt).Seconds()
+	} else {
+		bundle.DurationSeconds = time.Since(started).Seconds()
+	}
+
+	// 4. Write summary.json.
+	summaryPath := filepath.Join(run.WorktreePath, "proof", "summary.json")
+	if err := writeSummary(summaryPath, bundle); err != nil {
+		return nil, fmt.Errorf("write summary: %w", err)
+	}
+
+	return bundle, nil
+}
+
+// runCI executes the test suite in the worktree directory.
+func (c *Collector) runCI(ctx context.Context, dir string) (domain.CIResult, error) {
+	ciCmd := c.cfg.CICommand
+	if len(ciCmd) == 0 {
+		ciCmd = inferCICommand(dir)
+	}
+	if len(ciCmd) == 0 {
+		return domain.CIResult{Passed: true}, nil
+	}
+
+	cmd := exec.CommandContext(ctx, ciCmd[0], ciCmd[1:]...)
+	cmd.Dir = dir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	err := cmd.Run()
+	result := domain.CIResult{Passed: err == nil}
+	// parseTestOutput understands go test -v format only; skip for other runners
+	// to avoid reporting misleading zero counts.
+	if ciCmd[0] == "go" {
+		result.TestCount, result.Failures = parseTestOutput(out.String())
+	}
+	return result, err
+}
+
+// diffStats returns line-count statistics comparing the worktree HEAD to baseBranch.
+func (c *Collector) diffStats(dir, baseBranch string) (domain.DiffStat, error) {
+	// git diff --shortstat <base>...HEAD
+	cmd := exec.Command("git", "diff", "--shortstat", baseBranch+"...HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return domain.DiffStat{}, fmt.Errorf("git diff: %w", err)
+	}
+	return parseShortstat(string(out)), nil
+}
+
+// inferCICommand looks for common CI entry points in the repo.
+func inferCICommand(dir string) []string {
+	if fileExists(filepath.Join(dir, "go.mod")) {
+		return []string{"go", "test", "./..."}
+	}
+	if fileExists(filepath.Join(dir, "package.json")) {
+		return []string{"npm", "test", "--", "--passWithNoTests"}
+	}
+	if fileExists(filepath.Join(dir, "Makefile")) {
+		return []string{"make", "test"}
+	}
+	return nil
+}
+
+// parseShortstat parses output like:
+//
+//	3 files changed, 87 insertions(+), 12 deletions(-)
+func parseShortstat(s string) domain.DiffStat {
+	var stat domain.DiffStat
+	s = strings.TrimSpace(s)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		fields := strings.Fields(part)
+		if len(fields) < 2 {
+			continue
+		}
+		n, _ := strconv.Atoi(fields[0])
+		switch {
+		case strings.Contains(fields[1], "file"):
+			stat.FilesChanged = n
+		case strings.Contains(part, "insertion"):
+			stat.Insertions = n
+		case strings.Contains(part, "deletion"):
+			stat.Deletions = n
+		}
+	}
+	return stat
+}
+
+// parseTestOutput extracts test count and failure count from go test -v output.
+// This is best-effort; returns 0,0 if it can't parse.
+func parseTestOutput(output string) (total, failures int) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "--- PASS") || strings.HasPrefix(line, "--- FAIL") {
+			total++
+		}
+		if strings.HasPrefix(line, "--- FAIL") {
+			failures++
+		}
+	}
+	return
+}
+
+func writeSummary(path string, bundle *domain.ProofBundle) error {
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

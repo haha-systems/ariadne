@@ -1,0 +1,28 @@
+[conductor]
+max_concurrent_runs = 4
+default_provider = "claude"
+work_interval_seconds = 30
+
+[work_sources.github]
+repo = "haha-systems/conductor"
+label_filter = ["conductor"]
+
+[providers.claude]
+enabled = true
+binary = "claude"
+extra_args = ["--model", "claude-sonnet-4-6"]
+cost_per_1k_tokens = 0.003
+
+[routing]
+strategy = "round-robin"
+
+[proof]
+require_ci_pass = true
+open_pr = true
+pr_base_branch = "main"
+safe_land = true
+
+[sandbox]
+worktree_dir = ".conductor/runs"
+timeout_minutes = 45
+preserve_on_failure = true
