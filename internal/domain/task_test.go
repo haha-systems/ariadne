@@ -86,10 +86,53 @@ func TestTaskType_DefaultIsIssue(t *testing.T) {
 	if TaskTypeRebase != "rebase" {
 		t.Errorf("expected TaskTypeRebase=\"rebase\", got %q", TaskTypeRebase)
 	}
+	if TaskTypeReview != "review" {
+		t.Errorf("expected TaskTypeReview=\"review\", got %q", TaskTypeReview)
+	}
+	if TaskTypeRevise != "revise" {
+		t.Errorf("expected TaskTypeRevise=\"revise\", got %q", TaskTypeRevise)
+	}
 	// A task constructed without setting Type has the zero value (empty string),
 	// which should be treated as issue by callers.
 	if task.Type == TaskTypeRebase {
 		t.Error("zero-value task should not be treated as rebase")
+	}
+}
+
+func TestTask_ReviewFields(t *testing.T) {
+	task := &Task{
+		ID:              "7",
+		Type:            TaskTypeReview,
+		SourceURL:       "https://github.com/org/repo/pull/7",
+		Branch:          "feat/my-feature",
+		ReviewCycle:     1,
+		SpecIssueNumber: 42,
+	}
+	if task.ReviewCycle != 1 {
+		t.Errorf("expected ReviewCycle=1, got %d", task.ReviewCycle)
+	}
+	if task.SpecIssueNumber != 42 {
+		t.Errorf("expected SpecIssueNumber=42, got %d", task.SpecIssueNumber)
+	}
+	if task.Type != TaskTypeReview {
+		t.Errorf("expected type=review, got %q", task.Type)
+	}
+}
+
+func TestTask_ReviseFields(t *testing.T) {
+	task := &Task{
+		ID:              "7",
+		Type:            TaskTypeRevise,
+		SourceURL:       "https://github.com/org/repo/pull/7",
+		Branch:          "feat/my-feature",
+		ReviewCycle:     2,
+		SpecIssueNumber: 42,
+	}
+	if task.Type != TaskTypeRevise {
+		t.Errorf("expected type=revise, got %q", task.Type)
+	}
+	if task.ReviewCycle != 2 {
+		t.Errorf("expected ReviewCycle=2, got %d", task.ReviewCycle)
 	}
 }
 

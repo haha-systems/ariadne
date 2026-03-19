@@ -291,3 +291,23 @@ func linearIssueToTask(issue linearIssue) *domain.Task {
 		UpdatedAt:   issue.UpdatedAt,
 	}
 }
+
+// ListPRsNeedingReview is not supported for Linear and always returns nil.
+func (s *LinearSource) ListPRsNeedingReview(_ context.Context) ([]*domain.Task, error) {
+	return nil, nil
+}
+
+// ListPRsNeedingRevision is not supported for Linear and always returns nil.
+func (s *LinearSource) ListPRsNeedingRevision(_ context.Context) ([]*domain.Task, error) {
+	return nil, nil
+}
+
+// RecordReviewOutcome is not supported for Linear and is a no-op.
+func (s *LinearSource) RecordReviewOutcome(_ context.Context, _ *domain.Task, _ bool, _ string) error {
+	return nil
+}
+
+// MarkPRNeedsReview is not supported for Linear and is a no-op.
+func (s *LinearSource) MarkPRNeedsReview(_ context.Context, _ int, _ int) error {
+	return nil
+}

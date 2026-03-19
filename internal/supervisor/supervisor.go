@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,13 @@ type RebaseRecorder interface {
 	RecordRebaseOutcome(ctx context.Context, task *domain.Task, succeeded bool, reason string) error
 }
 
+// ReviewRecorder is satisfied by any WorkSource that supports QA review outcome
+// recording. It is used by the supervisor without importing the worksource package.
+type ReviewRecorder interface {
+	RecordReviewOutcome(ctx context.Context, task *domain.Task, approved bool, body string) error
+	MarkPRNeedsReview(ctx context.Context, prNumber int, issueNumber int) error
+}
+
 // RunRequest is submitted to the supervisor to start a run.
 type RunRequest struct {
 	Run      *domain.Run
@@ -33,6 +41,8 @@ type RunRequest struct {
 	Persona *config.PersonaConfig
 	// Source is used by rebase tasks to record outcomes. Nil is safe for issue tasks.
 	Source RebaseRecorder
+	// ReviewSource is used by review/revise tasks to record outcomes. Nil is safe for other task types.
+	ReviewSource ReviewRecorder
 }
 
 // Result is returned by the supervisor after a run terminates.
@@ -64,8 +74,13 @@ func New(cfg Config) *Supervisor {
 // Execute runs the task synchronously and returns when the run reaches a terminal state.
 // The caller is responsible for collecting proof afterwards.
 func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
-	if req.Task.Type == domain.TaskTypeRebase {
+	switch req.Task.Type {
+	case domain.TaskTypeRebase:
 		return s.executeRebase(ctx, req)
+	case domain.TaskTypeReview:
+		return s.executeReview(ctx, req)
+	case domain.TaskTypeRevise:
+		return s.executeRevise(ctx, req)
 	}
 
 	run := req.Run
@@ -512,6 +527,353 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 		s.cleanup(run)
 	}
 	return &Result{Run: run}
+}
+
+// executeReview handles a TaskTypeReview run: the QA agent reads the PR diff
+// and posts an approval or change-request review via the gh CLI.
+// No worktree is needed — the agent runs from the repo root.
+func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result {
+	run := req.Run
+	now := time.Now()
+	run.StartedAt = now
+	run.Status = domain.RunStatusRunning
+	run.WorktreePath = s.cfg.RepoRoot
+
+	// Build review prompt.
+	prompt, err := s.buildReviewPrompt(ctx, req.Task)
+	if err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("build review prompt: %w", err))
+	}
+
+	// Write prompt to a temp file in the repo root.
+	taskFile := filepath.Join(s.cfg.RepoRoot, ".conductor-review-"+run.ID+".md")
+	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("write review prompt: %w", err))
+	}
+	defer os.Remove(taskFile) //nolint:errcheck
+
+	// Open run log.
+	logPath := filepath.Join(s.cfg.RepoRoot, "run.jsonl")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("open run log: %w", err))
+	}
+	defer logFile.Close()
+
+	logWriter := &providerLogWriter{w: logFile}
+
+	// Apply timeout.
+	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	rc := provider.RunContext{
+		RepoPath:       s.cfg.RepoRoot,
+		TaskFile:       taskFile,
+		Env:            env,
+		LogWriter:      logWriter,
+		TimeoutSeconds: int(timeout.Seconds()),
+	}
+
+	logEvent(logFile, "run_started", map[string]any{
+		"run_id":  run.ID,
+		"task_id": run.TaskID,
+		"type":    "review",
+		"pr":      req.Task.SourceURL,
+	})
+
+	handle, err := req.Provider.Run(runCtx, rc)
+	if err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("launch provider: %w", err))
+	}
+
+	waitErr := handle.Wait()
+	finished := time.Now()
+	run.FinishedAt = &finished
+
+	if runCtx.Err() == context.DeadlineExceeded {
+		run.Status = domain.RunStatusTimeout
+		reason := fmt.Sprintf("review timed out after %d minutes", s.cfg.TimeoutMinutes)
+		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		s.recordReviewOutcome(ctx, req, false, reason)
+		return &Result{Run: run, Err: fmt.Errorf("%s", reason)}
+	}
+
+	if waitErr != nil {
+		run.Status = domain.RunStatusFailed
+		run.ErrorMsg = waitErr.Error()
+		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		s.recordReviewOutcome(ctx, req, false, waitErr.Error())
+		return &Result{Run: run, Err: waitErr}
+	}
+
+	run.Status = domain.RunStatusSucceeded
+	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	// Agent exit 0 means it approved via gh pr review --approve.
+	s.recordReviewOutcome(ctx, req, true, "")
+	return &Result{Run: run}
+}
+
+// executeRevise handles a TaskTypeRevise run: the implementing agent addresses
+// QA feedback and pushes to the existing PR branch.
+func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result {
+	run := req.Run
+	now := time.Now()
+	run.StartedAt = now
+	run.Status = domain.RunStatusRunning
+
+	worktreePath := filepath.Join(s.cfg.RepoRoot, s.cfg.WorktreeBaseDir, run.ID)
+	run.WorktreePath = worktreePath
+
+	// Fetch so origin/<branch> is current.
+	fetchCmd := exec.Command("git", "fetch", "origin")
+	fetchCmd.Dir = s.cfg.RepoRoot
+	if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+		s.recordReviewOutcome(ctx, req, false, fetchErr.Error())
+		return s.fail(run, fmt.Errorf("git fetch: %w: %s", fetchErr, out))
+	}
+
+	// Create worktree with the PR branch checked out.
+	if err := s.createRebaseBranchWorktree(worktreePath, req.Task.Branch); err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("create revise worktree: %w", err))
+	}
+
+	// Build revision prompt.
+	prompt, err := s.buildRevisionPrompt(ctx, req.Task)
+	if err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("build revision prompt: %w", err))
+	}
+	taskFile := filepath.Join(worktreePath, ".conductor-task.md")
+	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("write task file: %w", err))
+	}
+
+	// Open run log.
+	if err := os.MkdirAll(filepath.Join(worktreePath, "proof"), 0755); err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("create proof dir: %w", err))
+	}
+	logPath := filepath.Join(worktreePath, "run.jsonl")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("create run log: %w", err))
+	}
+	defer logFile.Close()
+
+	logWriter := &providerLogWriter{w: logFile}
+
+	// Apply timeout.
+	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	rc := provider.RunContext{
+		RepoPath:       worktreePath,
+		TaskFile:       taskFile,
+		Env:            env,
+		LogWriter:      logWriter,
+		TimeoutSeconds: int(timeout.Seconds()),
+	}
+
+	logEvent(logFile, "run_started", map[string]any{
+		"run_id":  run.ID,
+		"task_id": run.TaskID,
+		"type":    "revise",
+		"branch":  req.Task.Branch,
+	})
+
+	handle, err := req.Provider.Run(runCtx, rc)
+	if err != nil {
+		s.cleanup(run)
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("launch provider: %w", err))
+	}
+
+	waitErr := handle.Wait()
+	finished := time.Now()
+	run.FinishedAt = &finished
+
+	if runCtx.Err() == context.DeadlineExceeded {
+		run.Status = domain.RunStatusTimeout
+		reason := fmt.Sprintf("revise timed out after %d minutes", s.cfg.TimeoutMinutes)
+		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		s.recordReviewOutcome(ctx, req, false, reason)
+		if !s.cfg.PreserveOnFailure {
+			s.cleanup(run)
+		}
+		return &Result{Run: run, Err: fmt.Errorf("%s", reason)}
+	}
+
+	if waitErr != nil {
+		run.Status = domain.RunStatusFailed
+		run.ErrorMsg = waitErr.Error()
+		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		s.recordReviewOutcome(ctx, req, false, "revision agent failed: "+waitErr.Error())
+		if !s.cfg.PreserveOnFailure {
+			s.cleanup(run)
+		}
+		return &Result{Run: run, Err: waitErr}
+	}
+
+	run.Status = domain.RunStatusSucceeded
+	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+
+	// On success, re-trigger QA review.
+	if req.ReviewSource != nil {
+		prNum, err := strconv.Atoi(req.Task.ID)
+		if err == nil {
+			req.ReviewSource.MarkPRNeedsReview(ctx, prNum, req.Task.SpecIssueNumber) //nolint:errcheck
+		}
+	}
+
+	if !s.cfg.PreserveOnFailure {
+		s.cleanup(run)
+	}
+	return &Result{Run: run}
+}
+
+func (s *Supervisor) recordReviewOutcome(ctx context.Context, req RunRequest, approved bool, reason string) {
+	if req.ReviewSource == nil {
+		return
+	}
+	req.ReviewSource.RecordReviewOutcome(ctx, req.Task, approved, reason) //nolint:errcheck
+}
+
+// buildReviewPrompt builds the review task prompt for the QA agent.
+func (s *Supervisor) buildReviewPrompt(ctx context.Context, task *domain.Task) ([]byte, error) {
+	var b strings.Builder
+
+	// Load QA persona AGENTS.md if present.
+	agentsPath := filepath.Join(s.cfg.RepoRoot, ".conductor", "personas", "qa-engineer", "AGENTS.md")
+	if data, err := os.ReadFile(agentsPath); err == nil {
+		b.WriteString(string(data))
+		b.WriteString("\n\n---\n\n")
+	}
+
+	prNum := task.ID
+	cycle := task.ReviewCycle
+
+	fmt.Fprintf(&b, "# Task: Review PR #%s — cycle %d of 3\n\n", prNum, cycle)
+	fmt.Fprintf(&b, "**PR:** %s\n", task.SourceURL)
+	fmt.Fprintf(&b, "**Branch:** %s\n", task.Branch)
+	fmt.Fprintf(&b, "**Original issue:** #%d\n\n", task.SpecIssueNumber)
+
+	// Fetch original issue body.
+	issueBody := s.fetchIssueBody(ctx, task)
+	b.WriteString("## Original Spec\n\n")
+	b.WriteString(issueBody)
+	b.WriteString("\n\n")
+
+	b.WriteString("## Instructions\n\n")
+	fmt.Fprintf(&b, "1. Run `gh pr diff %s` to read the full implementation diff\n", prNum)
+	b.WriteString("2. Verify that every requirement in the spec above is satisfied by the implementation\n")
+	b.WriteString("3. Check for obvious bugs or spec gaps — do NOT flag style issues or unsolicited improvements\n")
+	b.WriteString("4. If the implementation is complete and correct:\n")
+	fmt.Fprintf(&b, "   `gh pr review %s --approve --body \"<brief approval summary>\"`\n", prNum)
+	b.WriteString("5. If there are genuine gaps or bugs:\n")
+	fmt.Fprintf(&b, "   `gh pr review %s --request-changes --body \"<specific, actionable list of what is missing or wrong>\"`\n\n", prNum)
+	b.WriteString("Exit 0 after posting your review. Do not make any code changes.\n")
+
+	return []byte(b.String()), nil
+}
+
+// buildRevisionPrompt builds the revision task prompt for the implementing agent.
+func (s *Supervisor) buildRevisionPrompt(ctx context.Context, task *domain.Task) ([]byte, error) {
+	var b strings.Builder
+
+	// Load default workflow or persona AGENTS.md.
+	workflow := s.loadWorkflow(nil)
+	if workflow != "" {
+		b.WriteString(workflow)
+		b.WriteString("\n\n---\n\n")
+	}
+
+	prNum := task.ID
+	cycle := task.ReviewCycle
+
+	fmt.Fprintf(&b, "# Task: Address QA feedback on PR #%s — cycle %d of 3\n\n", prNum, cycle)
+	fmt.Fprintf(&b, "**PR:** %s\n", task.SourceURL)
+	fmt.Fprintf(&b, "**Branch:** %s\n\n", task.Branch)
+
+	// Fetch original issue body.
+	issueBody := s.fetchIssueBody(ctx, task)
+	fmt.Fprintf(&b, "## Original Spec (Issue #%d)\n\n", task.SpecIssueNumber)
+	b.WriteString(issueBody)
+	b.WriteString("\n\n")
+
+	// Fetch QA feedback from PR comments.
+	prComments := s.fetchPRComments(ctx, task)
+	b.WriteString("## QA Feedback\n\n")
+	b.WriteString(prComments)
+	b.WriteString("\n\n")
+
+	b.WriteString("## Instructions\n\n")
+	b.WriteString("1. Read the QA feedback carefully\n")
+	b.WriteString("2. Make all necessary changes to address every point raised\n")
+	fmt.Fprintf(&b, "3. `git add -A && git commit -m \"address QA feedback (cycle %d)\"`\n", cycle)
+	fmt.Fprintf(&b, "4. `git push origin %s`\n\n", task.Branch)
+	b.WriteString("Do not open a new PR — push to the existing branch. Do not address anything not mentioned in the QA feedback.\n")
+
+	return []byte(b.String()), nil
+}
+
+// fetchIssueBody fetches the body of the original spec issue via the gh CLI.
+// Returns a placeholder string on error rather than failing the prompt build.
+func (s *Supervisor) fetchIssueBody(ctx context.Context, task *domain.Task) string {
+	if task.SpecIssueNumber == 0 {
+		return "(original issue body unavailable)"
+	}
+	repoSlug := extractRepoSlug(task.SourceURL)
+	if repoSlug == "" {
+		return "(original issue body unavailable)"
+	}
+	out, err := exec.CommandContext(ctx, "gh", "api",
+		fmt.Sprintf("repos/%s/issues/%d", repoSlug, task.SpecIssueNumber),
+		"--jq", ".body",
+	).Output()
+	if err != nil {
+		return "(could not fetch issue body)"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// fetchPRComments fetches review comments from the PR via the gh CLI.
+func (s *Supervisor) fetchPRComments(ctx context.Context, task *domain.Task) string {
+	out, err := exec.CommandContext(ctx, "gh", "pr", "view", task.ID, "--comments").Output()
+	if err != nil {
+		return "(could not fetch PR comments)"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// extractRepoSlug extracts "owner/repo" from a GitHub PR or issue URL.
+// e.g. "https://github.com/org/repo/pull/7" -> "org/repo"
+func extractRepoSlug(sourceURL string) string {
+	// Strip scheme and host.
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(sourceURL, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(sourceURL, prefix)
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 func (s *Supervisor) recordRebaseOutcome(ctx context.Context, req RunRequest, succeeded bool, reason string) {

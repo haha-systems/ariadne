@@ -28,6 +28,10 @@ const (
 	TaskTypeIssue TaskType = "issue"
 	// TaskTypeRebase is a task to rebase a PR branch onto its base branch.
 	TaskTypeRebase TaskType = "rebase"
+	// TaskTypeReview is a task for the QA persona to review a PR against its spec.
+	TaskTypeReview TaskType = "review"
+	// TaskTypeRevise is a task for the implementing agent to address QA feedback.
+	TaskTypeRevise TaskType = "revise"
 )
 
 // TaskConfig holds the optional conductor: front-matter parsed from a task description.
@@ -59,6 +63,12 @@ type Task struct {
 	BaseBranch string
 	// Attempts is the number of rebase attempts already recorded by the WorkSource.
 	Attempts int
+	// ReviewCycle is the QA review cycle number (1, 2, 3). Only used for
+	// TaskTypeReview and TaskTypeRevise tasks.
+	ReviewCycle int
+	// SpecIssueNumber is the originating issue number for review/revise tasks.
+	// Zero for TaskTypeIssue and TaskTypeRebase tasks.
+	SpecIssueNumber int
 }
 
 // frontMatterMarker is the YAML front-matter delimiter.
