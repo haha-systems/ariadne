@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -353,6 +354,111 @@ func TestExtractRepoSlug(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("extractRepoSlug(%q) = %q, want %q", tc.url, got, tc.expected)
 		}
+	}
+}
+
+func TestPersonaEnv_WithToken(t *testing.T) {
+	t.Setenv("MY_PERSONA_TOKEN", "tok-abc123")
+	persona := &config.PersonaConfig{GitHubTokenEnv: "MY_PERSONA_TOKEN"}
+	env := personaEnv(persona)
+	if env["GITHUB_TOKEN"] != "tok-abc123" {
+		t.Errorf("expected GITHUB_TOKEN=tok-abc123, got %q", env["GITHUB_TOKEN"])
+	}
+}
+
+func TestPersonaEnv_NoGitHubTokenEnv(t *testing.T) {
+	persona := &config.PersonaConfig{Name: "lead-engineer"}
+	env := personaEnv(persona)
+	if len(env) != 0 {
+		t.Errorf("expected empty env when GitHubTokenEnv unset, got %v", env)
+	}
+}
+
+func TestPersonaEnv_NilPersona(t *testing.T) {
+	env := personaEnv(nil)
+	if len(env) != 0 {
+		t.Errorf("expected empty env for nil persona, got %v", env)
+	}
+}
+
+func TestPersonaEnv_EnvVarNotSet(t *testing.T) {
+	os.Unsetenv("UNSET_PERSONA_TOKEN") //nolint:errcheck
+	persona := &config.PersonaConfig{GitHubTokenEnv: "UNSET_PERSONA_TOKEN"}
+	env := personaEnv(persona)
+	if _, ok := env["GITHUB_TOKEN"]; ok {
+		t.Error("expected no GITHUB_TOKEN when env var is unset")
+	}
+}
+
+func TestConfigureGitAuthor_SetsNameAndEmail(t *testing.T) {
+	dir := t.TempDir()
+	// Initialize a real git repo so git config works.
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+
+	persona := &config.PersonaConfig{
+		Name:        "lead-engineer",
+		DisplayName: "Alex",
+		Email:       "alex@example.com",
+	}
+	if err := configureGitAuthor(dir, persona); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	nameOut, _ := exec.Command("git", "-C", dir, "config", "user.name").Output()
+	if strings.TrimSpace(string(nameOut)) != "Alex" {
+		t.Errorf("expected user.name=Alex, got %q", strings.TrimSpace(string(nameOut)))
+	}
+	emailOut, _ := exec.Command("git", "-C", dir, "config", "user.email").Output()
+	if strings.TrimSpace(string(emailOut)) != "alex@example.com" {
+		t.Errorf("expected user.email=alex@example.com, got %q", strings.TrimSpace(string(emailOut)))
+	}
+}
+
+func TestConfigureGitAuthor_FallsBackToName(t *testing.T) {
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+
+	persona := &config.PersonaConfig{
+		Name:        "lead-engineer",
+		DisplayName: "", // empty — should fall back to Name
+	}
+	if err := configureGitAuthor(dir, persona); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	nameOut, _ := exec.Command("git", "-C", dir, "config", "user.name").Output()
+	if strings.TrimSpace(string(nameOut)) != "lead-engineer" {
+		t.Errorf("expected user.name=lead-engineer, got %q", strings.TrimSpace(string(nameOut)))
+	}
+}
+
+func TestConfigureGitAuthor_NilPersona(t *testing.T) {
+	if err := configureGitAuthor(t.TempDir(), nil); err != nil {
+		t.Errorf("expected nil error for nil persona, got %v", err)
+	}
+}
+
+func TestMergeEnv_ThreeMaps(t *testing.T) {
+	a := map[string]string{"A": "1", "B": "base"}
+	b := map[string]string{"B": "mid", "C": "3"}
+	c := map[string]string{"B": "last", "D": "4"}
+
+	merged := mergeEnv(a, b, c)
+	if merged["A"] != "1" {
+		t.Errorf("expected A=1, got %s", merged["A"])
+	}
+	if merged["B"] != "last" {
+		t.Errorf("expected B=last (last map wins), got %s", merged["B"])
+	}
+	if merged["C"] != "3" {
+		t.Errorf("expected C=3, got %s", merged["C"])
+	}
+	if merged["D"] != "4" {
+		t.Errorf("expected D=4, got %s", merged["D"])
 	}
 }
 

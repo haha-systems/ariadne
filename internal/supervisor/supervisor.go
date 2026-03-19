@@ -110,6 +110,11 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 		}
 	}
 
+	if err := configureGitAuthor(worktreePath, req.Persona); err != nil {
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("configure git author: %w", err))
+	}
+
 	// 3. Write task prompt to file.
 	taskFile := filepath.Join(worktreePath, ".conductor-task.md")
 	workflow := s.loadWorkflow(req.Persona)
@@ -139,8 +144,8 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 6. Build env: merge global + per-task.
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	// 6. Build env: merge global + per-task + persona.
+	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task), personaEnv(req.Persona))
 
 	rc := provider.RunContext{
 		RepoPath:       worktreePath,
@@ -292,15 +297,50 @@ func (lw *providerLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func mergeEnv(global, perTask map[string]string) map[string]string {
-	merged := make(map[string]string, len(global)+len(perTask))
-	for k, v := range global {
-		merged[k] = v
-	}
-	for k, v := range perTask {
-		merged[k] = v
+func mergeEnv(maps ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			merged[k] = v
+		}
 	}
 	return merged
+}
+
+func personaEnv(persona *config.PersonaConfig) map[string]string {
+	env := map[string]string{}
+	if persona == nil || persona.GitHubTokenEnv == "" {
+		return env
+	}
+	if token := os.Getenv(persona.GitHubTokenEnv); token != "" {
+		env["GITHUB_TOKEN"] = token
+	}
+	return env
+}
+
+func configureGitAuthor(worktreePath string, persona *config.PersonaConfig) error {
+	if persona == nil {
+		return nil
+	}
+	name := persona.DisplayName
+	if name == "" {
+		name = persona.Name
+	}
+	if name != "" {
+		cmd := exec.Command("git", "config", "user.name", name)
+		cmd.Dir = worktreePath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git config user.name: %w: %s", err, out)
+		}
+	}
+	if persona.Email != "" {
+		cmd := exec.Command("git", "config", "user.email", persona.Email)
+		cmd.Dir = worktreePath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git config user.email: %w: %s", err, out)
+		}
+	}
+	return nil
 }
 
 func taskEnv(task *domain.Task) map[string]string {
@@ -695,6 +735,12 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 		return s.fail(run, fmt.Errorf("create revise worktree: %w", err))
 	}
 
+	if err := configureGitAuthor(worktreePath, req.Persona); err != nil {
+		s.cleanup(run)
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		return s.fail(run, fmt.Errorf("configure git author: %w", err))
+	}
+
 	// Build revision prompt.
 	prompt, err := s.buildRevisionPrompt(ctx, req.Task)
 	if err != nil {
@@ -731,7 +777,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task), personaEnv(req.Persona))
 	rc := provider.RunContext{
 		RepoPath:       worktreePath,
 		TaskFile:       taskFile,

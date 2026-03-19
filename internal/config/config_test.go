@@ -172,13 +172,11 @@ func TestDiscoverPersonas_WithPersonas(t *testing.T) {
 	}
 }
 
-func TestDiscoverPersonas_IdentityFields(t *testing.T) {
+func TestDiscoverPersonas_NewFields(t *testing.T) {
 	dir := t.TempDir()
 	personasDir := filepath.Join(dir, ".conductor", "personas")
-
-	// Persona with all three new fields.
-	withFieldsDir := filepath.Join(personasDir, "lead-engineer")
-	if err := os.MkdirAll(withFieldsDir, 0755); err != nil {
+	pDir := filepath.Join(personasDir, "lead-engineer")
+	if err := os.MkdirAll(pDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	toml := `provider = "claude"
@@ -186,42 +184,39 @@ name = "Alex"
 email = "alex@haha-systems.bot"
 github_token_env = "GITHUB_TOKEN_LEAD_ENGINEER"
 `
-	os.WriteFile(filepath.Join(withFieldsDir, "persona.toml"), []byte(toml), 0644) //nolint:errcheck
+	os.WriteFile(filepath.Join(pDir, "persona.toml"), []byte(toml), 0644) //nolint:errcheck
 
-	// Persona with no persona.toml — fields should be empty strings.
-	noTomlDir := filepath.Join(personasDir, "no-toml")
-	if err := os.MkdirAll(noTomlDir, 0755); err != nil {
+	personas := discoverPersonas(dir)
+	p, ok := personas["lead-engineer"]
+	if !ok {
+		t.Fatal("expected lead-engineer persona")
+	}
+	if p.DisplayName != "Alex" {
+		t.Errorf("expected DisplayName=Alex, got %q", p.DisplayName)
+	}
+	if p.Email != "alex@haha-systems.bot" {
+		t.Errorf("expected Email=alex@haha-systems.bot, got %q", p.Email)
+	}
+	if p.GitHubTokenEnv != "GITHUB_TOKEN_LEAD_ENGINEER" {
+		t.Errorf("expected GitHubTokenEnv=GITHUB_TOKEN_LEAD_ENGINEER, got %q", p.GitHubTokenEnv)
+	}
+}
+
+func TestDiscoverPersonas_NoToml_EmptyNewFields(t *testing.T) {
+	dir := t.TempDir()
+	personasDir := filepath.Join(dir, ".conductor", "personas")
+	pDir := filepath.Join(personasDir, "no-toml")
+	if err := os.MkdirAll(pDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 
 	personas := discoverPersonas(dir)
-
-	le, ok := personas["lead-engineer"]
-	if !ok {
-		t.Fatal("expected lead-engineer persona")
-	}
-	if le.DisplayName != "Alex" {
-		t.Errorf("expected DisplayName=Alex, got %q", le.DisplayName)
-	}
-	if le.Email != "alex@haha-systems.bot" {
-		t.Errorf("expected Email=alex@haha-systems.bot, got %q", le.Email)
-	}
-	if le.GitHubTokenEnv != "GITHUB_TOKEN_LEAD_ENGINEER" {
-		t.Errorf("expected GitHubTokenEnv=GITHUB_TOKEN_LEAD_ENGINEER, got %q", le.GitHubTokenEnv)
-	}
-
-	nt, ok := personas["no-toml"]
+	p, ok := personas["no-toml"]
 	if !ok {
 		t.Fatal("expected no-toml persona")
 	}
-	if nt.DisplayName != "" {
-		t.Errorf("expected empty DisplayName, got %q", nt.DisplayName)
-	}
-	if nt.Email != "" {
-		t.Errorf("expected empty Email, got %q", nt.Email)
-	}
-	if nt.GitHubTokenEnv != "" {
-		t.Errorf("expected empty GitHubTokenEnv, got %q", nt.GitHubTokenEnv)
+	if p.DisplayName != "" || p.Email != "" || p.GitHubTokenEnv != "" {
+		t.Errorf("expected empty new fields for persona with no toml, got %+v", p)
 	}
 }
 
