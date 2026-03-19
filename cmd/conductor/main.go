@@ -463,7 +463,7 @@ func buildWorkSource(cfg *config.Config) (worksource.WorkSource, error) {
 		if token == "" {
 			return nil, fmt.Errorf("GITHUB_TOKEN env var required for GitHub work source")
 		}
-		return worksource.NewGitHubSource(token, cfg.WorkSources.GitHub.Repo, cfg.WorkSources.GitHub.LabelFilter)
+		return worksource.NewGitHubSource(token, cfg.WorkSources.GitHub.Repo, cfg.WorkSources.GitHub.LabelFilter, cfg.WorkSources.GitHub.AllowedAuthors)
 	}
 	if cfg.WorkSources.Linear != nil {
 		token := os.Getenv("LINEAR_API_KEY")

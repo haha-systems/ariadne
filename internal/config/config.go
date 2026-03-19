@@ -33,8 +33,9 @@ type WorkSourcesConfig struct {
 }
 
 type GitHubSourceConfig struct {
-	Repo        string   `toml:"repo"`
-	LabelFilter []string `toml:"label_filter"`
+	Repo           string   `toml:"repo"`
+	LabelFilter    []string `toml:"label_filter"`
+	AllowedAuthors []string `toml:"allowed_authors"` // empty means allow all
 }
 
 type LinearSourceConfig struct {
