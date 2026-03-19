@@ -51,6 +51,23 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
+// --- helper issue builder ---
+
+func makeIssue(num int, author string, labels ...string) map[string]any {
+	lbls := make([]map[string]any, len(labels))
+	for i, l := range labels {
+		lbls[i] = map[string]any{"name": l}
+	}
+	return map[string]any{
+		"number":   num,
+		"title":    fmt.Sprintf("Issue %d", num),
+		"html_url": fmt.Sprintf("https://github.com/org/repo/issues/%d", num),
+		"body":     "",
+		"user":     map[string]any{"login": author},
+		"labels":   lbls,
+	}
+}
+
 // --- helper PR builder ---
 
 func makePR(num int, head, base string, labels ...string) map[string]any {
@@ -83,7 +100,7 @@ func makePRWithBody(num int, head, base, body string, labels ...string) map[stri
 func TestNewGitHubSource_InvalidRepo(t *testing.T) {
 	cases := []string{"", "noslash", "/nope", "nope/"}
 	for _, repo := range cases {
-		_, err := NewGitHubSource("token", repo, nil)
+		_, err := NewGitHubSource("token", repo, nil, nil)
 		if err == nil {
 			t.Errorf("expected error for repo %q", repo)
 		}
@@ -91,7 +108,7 @@ func TestNewGitHubSource_InvalidRepo(t *testing.T) {
 }
 
 func TestNewGitHubSource_ValidRepo(t *testing.T) {
-	s, err := NewGitHubSource("token", "org/repo", []string{"conductor"})
+	s, err := NewGitHubSource("token", "org/repo", []string{"conductor"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -828,6 +845,100 @@ func TestParseIssueRef(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("body=%q: expected %d, got %d", tc.body, tc.expected, got)
 		}
+	}
+}
+
+// --- authorAllowed / Poll author filter tests ---
+
+func TestAuthorAllowed_EmptyAllowlist(t *testing.T) {
+	s := &GitHubSource{}
+	issue := &gh.Issue{User: &gh.User{Login: gh.Ptr("anyone")}}
+	if !s.authorAllowed(issue) {
+		t.Error("expected authorAllowed=true when allowedAuthors is empty")
+	}
+}
+
+func TestAuthorAllowed_AllowedAuthor(t *testing.T) {
+	s := &GitHubSource{allowedAuthors: []string{"alice", "bob"}}
+	issue := &gh.Issue{User: &gh.User{Login: gh.Ptr("alice")}}
+	if !s.authorAllowed(issue) {
+		t.Error("expected authorAllowed=true for allowed author")
+	}
+}
+
+func TestAuthorAllowed_CaseInsensitive(t *testing.T) {
+	s := &GitHubSource{allowedAuthors: []string{"alice"}}
+	issue := &gh.Issue{User: &gh.User{Login: gh.Ptr("Alice")}}
+	if !s.authorAllowed(issue) {
+		t.Error("expected authorAllowed=true for case-insensitive match")
+	}
+}
+
+func TestAuthorAllowed_NotAllowed(t *testing.T) {
+	s := &GitHubSource{allowedAuthors: []string{"alice"}}
+	issue := &gh.Issue{User: &gh.User{Login: gh.Ptr("bob")}}
+	if s.authorAllowed(issue) {
+		t.Error("expected authorAllowed=false for author not in allowlist")
+	}
+}
+
+func TestPoll_AllowedAuthorReturned(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, []any{makeIssue(1, "alice", "conductor")})
+	})
+
+	s := newTestGitHubSource(t, mux)
+	s.labelFilter = []string{"conductor"}
+	s.allowedAuthors = []string{"alice"}
+
+	tasks, err := s.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].ID != "1" {
+		t.Errorf("expected task ID=1, got %q", tasks[0].ID)
+	}
+}
+
+func TestPoll_NonAllowedAuthorSkipped(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, []any{makeIssue(2, "bob", "conductor")})
+	})
+
+	s := newTestGitHubSource(t, mux)
+	s.labelFilter = []string{"conductor"}
+	s.allowedAuthors = []string{"alice"}
+
+	tasks, err := s.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks for non-allowed author, got %d", len(tasks))
+	}
+}
+
+func TestPoll_EmptyAllowedAuthors_AllowsAll(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, []any{makeIssue(3, "anyone", "conductor")})
+	})
+
+	s := newTestGitHubSource(t, mux)
+	s.labelFilter = []string{"conductor"}
+	// allowedAuthors is nil — all authors allowed
+
+	tasks, err := s.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task with empty allowlist, got %d", len(tasks))
 	}
 }
 
