@@ -286,11 +286,12 @@ func executeRace(
 		go func() {
 			run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
 			result := sup.Execute(raceCtx, supervisor.RunRequest{
-				Run:      run,
-				Task:     task,
-				Provider: p,
-				Persona:  route.Persona,
-				Source:   source,
+				Run:          run,
+				Task:         task,
+				Provider:     p,
+				Persona:      route.Persona,
+				Source:       source,
+				ReviewSource: source,
 			})
 			ch <- outcome{result: result, p: p}
 		}()
@@ -334,22 +335,29 @@ func executeRun(
 ) {
 	run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
 	result := sup.Execute(ctx, supervisor.RunRequest{
-		Run:      run,
-		Task:     task,
-		Provider: p,
-		Persona:  persona,
-		Source:   source,
+		Run:          run,
+		Task:         task,
+		Provider:     p,
+		Persona:      persona,
+		Source:       source,
+		ReviewSource: source,
 	})
 	if result.Err != nil {
 		log.Error("run failed", "run_id", run.ID, "error", result.Err)
-		if task.Type == domain.TaskTypeRebase {
+		switch task.Type {
+		case domain.TaskTypeReview, domain.TaskTypeRevise:
+			source.RecordReviewOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
+		case domain.TaskTypeRebase:
 			source.RecordRebaseOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
-		} else {
+		default:
 			source.PostResult(ctx, task, fmt.Sprintf("Run failed: %v", result.Err)) //nolint:errcheck
 		}
 		return
 	}
-	if task.Type == domain.TaskTypeRebase {
+	switch task.Type {
+	case domain.TaskTypeReview, domain.TaskTypeRevise:
+		return // outcome already recorded by supervisor
+	case domain.TaskTypeRebase:
 		return // outcome already recorded by supervisor via RecordRebaseOutcome
 	}
 	finishRun(ctx, run, task, p, collector, source, hooks, log)
@@ -367,7 +375,7 @@ func finishRun(
 ) {
 	log.Info("run succeeded", "run_id", run.ID)
 
-	bundle, err := collector.Collect(ctx, run, task, p)
+	bundle, err := collector.Collect(ctx, run, task, p, source)
 	if err != nil {
 		log.Error("proof collection failed", "run_id", run.ID, "error", err)
 		source.PostResult(ctx, task, fmt.Sprintf("Run succeeded but proof collection failed: %v", err)) //nolint:errcheck

@@ -3,6 +3,7 @@ package worksource
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -80,7 +81,17 @@ func (p *TaskPoller) poll(ctx context.Context, out chan<- *domain.Task) {
 		slog.Error("list open PRs failed", "source", p.source.Name(), "error", err)
 	}
 
-	tasks := append(issueTasks, prTasks...)
+	reviewTasks, err := p.source.ListPRsNeedingReview(ctx)
+	if err != nil {
+		slog.Error("list PRs needing review failed", "source", p.source.Name(), "error", err)
+	}
+
+	reviseTasks, err := p.source.ListPRsNeedingRevision(ctx)
+	if err != nil {
+		slog.Error("list PRs needing revision failed", "source", p.source.Name(), "error", err)
+	}
+
+	tasks := slices.Concat(issueTasks, prTasks, reviewTasks, reviseTasks)
 
 	for _, task := range tasks {
 		if !p.tryAcquireSlot() {

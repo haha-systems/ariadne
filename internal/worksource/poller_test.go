@@ -13,12 +13,14 @@ import (
 
 // mockSource is a controllable WorkSource for testing.
 type mockSource struct {
-	tasks     []*domain.Task
-	prTasks   []*domain.Task
-	claimErr  error
-	pollCount atomic.Int32
-	claimed   []string
-	mu        sync.Mutex
+	tasks        []*domain.Task
+	prTasks      []*domain.Task
+	reviewTasks  []*domain.Task
+	reviseTasks  []*domain.Task
+	claimErr     error
+	pollCount    atomic.Int32
+	claimed      []string
+	mu           sync.Mutex
 }
 
 func (m *mockSource) Name() string { return "mock" }
@@ -47,6 +49,22 @@ func (m *mockSource) ListOpenPRs(_ context.Context) ([]*domain.Task, error) {
 }
 
 func (m *mockSource) RecordRebaseOutcome(_ context.Context, _ *domain.Task, _ bool, _ string) error {
+	return nil
+}
+
+func (m *mockSource) ListPRsNeedingReview(_ context.Context) ([]*domain.Task, error) {
+	return m.reviewTasks, nil
+}
+
+func (m *mockSource) ListPRsNeedingRevision(_ context.Context) ([]*domain.Task, error) {
+	return m.reviseTasks, nil
+}
+
+func (m *mockSource) RecordReviewOutcome(_ context.Context, _ *domain.Task, _ bool, _ string) error {
+	return nil
+}
+
+func (m *mockSource) MarkPRNeedsReview(_ context.Context, _ int, _ int) error {
 	return nil
 }
 
@@ -148,6 +166,49 @@ func TestPoller_RebaseAndIssueTasks_BothFlow(t *testing.T) {
 	}
 	if !types[domain.TaskTypeRebase] {
 		t.Error("expected a rebase task to flow through the poller")
+	}
+}
+
+func TestPoller_AllFourSources_Flow(t *testing.T) {
+	issueTasks := makeTasks("issue-1")
+	prTask := &domain.Task{ID: "pr-1", Status: domain.TaskStatusPending, Type: domain.TaskTypeRebase}
+	reviewTask := &domain.Task{ID: "rev-1", Status: domain.TaskStatusPending, Type: domain.TaskTypeReview}
+	reviseTask := &domain.Task{ID: "rvs-1", Status: domain.TaskStatusPending, Type: domain.TaskTypeRevise}
+
+	src := &mockSource{
+		tasks:       issueTasks,
+		prTasks:     []*domain.Task{prTask},
+		reviewTasks: []*domain.Task{reviewTask},
+		reviseTasks: []*domain.Task{reviseTask},
+	}
+	p := NewPoller(src, PollerConfig{IntervalSeconds: 60, MaxConcurrentRuns: 4})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ch := p.Run(ctx)
+	var received []*domain.Task
+	for task := range ch {
+		received = append(received, task)
+		p.Done()
+		if len(received) == 4 {
+			cancel()
+		}
+	}
+
+	if len(received) != 4 {
+		t.Fatalf("expected 4 tasks (issue + rebase + review + revise), got %d", len(received))
+	}
+
+	types := map[domain.TaskType]int{}
+	for _, task := range received {
+		types[task.Type]++
+	}
+	if types[domain.TaskTypeReview] != 1 {
+		t.Errorf("expected 1 review task, got %d", types[domain.TaskTypeReview])
+	}
+	if types[domain.TaskTypeRevise] != 1 {
+		t.Errorf("expected 1 revise task, got %d", types[domain.TaskTypeRevise])
 	}
 }
 

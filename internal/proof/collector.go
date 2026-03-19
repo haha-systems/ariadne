@@ -20,6 +20,11 @@ type CostEstimator interface {
 	CostEstimate(promptLen int) (float64, bool)
 }
 
+// ReviewNotifier is implemented by work sources that can mark a PR as needing review.
+type ReviewNotifier interface {
+	MarkPRNeedsReview(ctx context.Context, prNumber int, issueNumber int) error
+}
+
 // Config controls what proof collection does.
 type Config struct {
 	RequireCIPass bool
@@ -40,7 +45,8 @@ func New(cfg Config) *Collector {
 // Collect runs CI, computes diff stats, optionally opens a PR, and writes
 // proof/summary.json into the run's worktree. It returns the ProofBundle.
 // provider may be nil; if non-nil and able to estimate cost, CostUSD is populated.
-func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.Task, provider CostEstimator) (*domain.ProofBundle, error) {
+// notifier may be nil; if non-nil and the bundle has a PRUrl, MarkPRNeedsReview is called.
+func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.Task, provider CostEstimator, notifier ReviewNotifier) (*domain.ProofBundle, error) {
 	started := time.Now()
 
 	bundle := &domain.ProofBundle{
@@ -82,6 +88,15 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 
 	// 5. Merge agent-written metadata (pr_url, walkthrough, etc.).
 	readAgentMetadata(run.WorktreePath, bundle)
+
+	// 5a. If a PR was opened, mark it as needing QA review.
+	if bundle.PRUrl != "" && notifier != nil {
+		prNum := parsePRNumber(bundle.PRUrl)
+		issueNum, _ := strconv.Atoi(task.ID)
+		if prNum > 0 && issueNum > 0 {
+			notifier.MarkPRNeedsReview(ctx, prNum, issueNum) //nolint:errcheck
+		}
+	}
 
 	// 6. Write summary.json.
 	summaryPath := filepath.Join(run.WorktreePath, "proof", "summary.json")
@@ -234,4 +249,18 @@ func writeSummary(path string, bundle *domain.ProofBundle) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// parsePRNumber extracts the PR number from a GitHub PR URL.
+// e.g. "https://github.com/org/repo/pull/42" -> 42
+func parsePRNumber(prURL string) int {
+	parts := strings.Split(prURL, "/pull/")
+	if len(parts) != 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimRight(parts[1], "/"))
+	if err != nil {
+		return 0
+	}
+	return n
 }
