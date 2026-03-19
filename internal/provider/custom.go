@@ -36,17 +36,15 @@ func (a *CustomAdapter) Run(ctx context.Context, rc RunContext) (RunHandle, erro
 	if a.shell.binary == "" {
 		return nil, fmt.Errorf("custom adapter %q: binary must be set", a.shell.name)
 	}
-	// Substitute template variables in extra args.
+	// Substitute template variables in extra args. Use a local copy of the
+	// shellAdapter so we never mutate the shared struct (race condition).
 	resolved := make([]string, len(a.shell.extraArgs))
 	for i, arg := range a.shell.extraArgs {
 		resolved[i] = applyTemplates(arg, rc)
 	}
-	// Temporarily replace extraArgs, run, then restore.
-	orig := a.shell.extraArgs
-	a.shell.extraArgs = resolved
-	handle, err := a.shell.adapterRun(ctx, rc)
-	a.shell.extraArgs = orig
-	return handle, err
+	local := a.shell
+	local.extraArgs = resolved
+	return local.adapterRun(ctx, rc)
 }
 
 func applyTemplates(s string, rc RunContext) string {
