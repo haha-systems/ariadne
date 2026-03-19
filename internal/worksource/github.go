@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -33,15 +34,16 @@ const (
 
 // GitHubSource polls a GitHub repository for issues and claims them via labels.
 type GitHubSource struct {
-	client      *gh.Client
-	owner       string
-	repo        string
-	labelFilter []string
+	client         *gh.Client
+	owner          string
+	repo           string
+	labelFilter    []string
+	allowedAuthors []string // empty = allow all
 }
 
 // NewGitHubSource creates a GitHubSource authenticated with the given token.
 // repo should be in "owner/repo" format.
-func NewGitHubSource(token, repo string, labelFilter []string) (*GitHubSource, error) {
+func NewGitHubSource(token, repo string, labelFilter []string, allowedAuthors []string) (*GitHubSource, error) {
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("repo must be in owner/repo format, got %q", repo)
@@ -51,10 +53,11 @@ func NewGitHubSource(token, repo string, labelFilter []string) (*GitHubSource, e
 	tc := oauth2.NewClient(context.Background(), ts)
 
 	return &GitHubSource{
-		client:      gh.NewClient(tc),
-		owner:       parts[0],
-		repo:        parts[1],
-		labelFilter: labelFilter,
+		client:         gh.NewClient(tc),
+		owner:          parts[0],
+		repo:           parts[1],
+		labelFilter:    labelFilter,
+		allowedAuthors: allowedAuthors,
 	}, nil
 }
 
@@ -80,6 +83,9 @@ func (s *GitHubSource) Poll(ctx context.Context) ([]*domain.Task, error) {
 			continue
 		}
 		if hasLabel(issue, claimedLabel) || hasLabel(issue, runningLabel) {
+			continue
+		}
+		if !s.authorAllowed(issue) {
 			continue
 		}
 		tasks = append(tasks, issueToTask(issue, s.owner+"/"+s.repo))
@@ -149,6 +155,23 @@ func (s *GitHubSource) matchesFilter(issue *gh.Issue) bool {
 		}
 	}
 	return true
+}
+
+// authorAllowed returns true if the issue author is in the allowedAuthors list,
+// or if no allowlist is configured. Comparison is case-insensitive since GitHub
+// usernames are case-insensitive.
+func (s *GitHubSource) authorAllowed(issue *gh.Issue) bool {
+	if len(s.allowedAuthors) == 0 {
+		return true // no allowlist configured — allow all
+	}
+	author := issue.GetUser().GetLogin()
+	for _, allowed := range s.allowedAuthors {
+		if strings.EqualFold(allowed, author) {
+			return true
+		}
+	}
+	slog.Debug("issue skipped: author not in allowed_authors", "issue_id", issue.GetNumber(), "author", author)
+	return false
 }
 
 func hasLabel(issue *gh.Issue, name string) bool {
