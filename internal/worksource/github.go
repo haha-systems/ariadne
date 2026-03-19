@@ -15,11 +15,20 @@ import (
 )
 
 const (
-	claimedLabel        = "conductor:claimed"
-	runningLabel        = "conductor:running"
-	rebasingLabel       = "conductor:rebasing"
+	claimedLabel         = "conductor:claimed"
+	runningLabel         = "conductor:running"
+	rebasingLabel        = "conductor:rebasing"
 	rebaseAbandonedLabel = "conductor:rebase-abandoned"
 	rebaseAttemptsPrefix = "conductor:rebase-attempts-"
+
+	needsReviewLabel     = "conductor:needs-review"
+	reviewingLabel       = "conductor:reviewing"
+	needsRevisionLabel   = "conductor:needs-revision"
+	revisingLabel        = "conductor:revising"
+	approvedLabel        = "conductor:approved"
+	reviewAbandonedLabel = "conductor:review-abandoned"
+	reviewCyclePrefix    = "conductor:review-cycle-"
+	issueRefPrefix       = "conductor:issue-"
 )
 
 // GitHubSource polls a GitHub repository for issues and claims them via labels.
@@ -86,10 +95,27 @@ func (s *GitHubSource) Claim(ctx context.Context, task *domain.Task) error {
 		return fmt.Errorf("invalid github id %q: %w", task.ID, err)
 	}
 
-	if task.Type == domain.TaskTypeRebase {
+	switch task.Type {
+	case domain.TaskTypeRebase:
 		_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, num, []string{rebasingLabel})
 		if err != nil {
 			return fmt.Errorf("claim rebase PR #%d: %w", num, err)
+		}
+		return nil
+	case domain.TaskTypeReview:
+		_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, num, []string{reviewingLabel})
+		if err != nil {
+			return fmt.Errorf("claim review PR #%d: %w", num, err)
+		}
+		return nil
+	case domain.TaskTypeRevise:
+		_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, num, []string{revisingLabel})
+		if err != nil {
+			return fmt.Errorf("claim revise PR #%d: %w", num, err)
+		}
+		_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, num, needsRevisionLabel)
+		if err != nil && !isNotFound(err) {
+			return fmt.Errorf("remove needs-revision label #%d: %w", num, err)
 		}
 		return nil
 	}
@@ -254,6 +280,205 @@ func (s *GitHubSource) RecordRebaseOutcome(ctx context.Context, task *domain.Tas
 	}
 
 	return nil
+}
+
+// MarkPRNeedsReview adds conductor:needs-review to the PR and records the
+// originating issue number as a conductor:issue-N label.
+func (s *GitHubSource) MarkPRNeedsReview(ctx context.Context, prNumber int, issueNumber int) error {
+	labels := []string{needsReviewLabel, issueRefPrefix + strconv.Itoa(issueNumber)}
+	_, _, err := s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNumber, labels)
+	if err != nil {
+		return fmt.Errorf("mark PR #%d needs-review: %w", prNumber, err)
+	}
+	return nil
+}
+
+// ListPRsNeedingReview returns open PRs labelled conductor:needs-review that
+// are not currently being reviewed or in a terminal state.
+func (s *GitHubSource) ListPRsNeedingReview(ctx context.Context) ([]*domain.Task, error) {
+	opts := &gh.PullRequestListOptions{
+		State: "open",
+		ListOptions: gh.ListOptions{PerPage: 100},
+	}
+	prs, _, err := s.client.PullRequests.List(ctx, s.owner, s.repo, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list PRs needing review: %w", err)
+	}
+
+	var tasks []*domain.Task
+	for _, pr := range prs {
+		if !prHasLabel(pr, needsReviewLabel) {
+			continue
+		}
+		if prHasLabel(pr, reviewingLabel) ||
+			prHasLabel(pr, reviewAbandonedLabel) ||
+			prHasLabel(pr, approvedLabel) {
+			continue
+		}
+		tasks = append(tasks, prToReviewTask(pr, s.owner+"/"+s.repo))
+	}
+	return tasks, nil
+}
+
+// ListPRsNeedingRevision returns open PRs labelled conductor:needs-revision
+// that are not already being revised or in a terminal state.
+func (s *GitHubSource) ListPRsNeedingRevision(ctx context.Context) ([]*domain.Task, error) {
+	opts := &gh.PullRequestListOptions{
+		State: "open",
+		ListOptions: gh.ListOptions{PerPage: 100},
+	}
+	prs, _, err := s.client.PullRequests.List(ctx, s.owner, s.repo, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list PRs needing revision: %w", err)
+	}
+
+	var tasks []*domain.Task
+	for _, pr := range prs {
+		if !prHasLabel(pr, needsRevisionLabel) {
+			continue
+		}
+		if prHasLabel(pr, revisingLabel) || prHasLabel(pr, reviewAbandonedLabel) {
+			continue
+		}
+		tasks = append(tasks, prToReviseTask(pr, s.owner+"/"+s.repo))
+	}
+	return tasks, nil
+}
+
+// RecordReviewOutcome updates labels after a QA review completes.
+func (s *GitHubSource) RecordReviewOutcome(ctx context.Context, task *domain.Task, approved bool, body string) error {
+	prNum, err := strconv.Atoi(task.ID)
+	if err != nil {
+		return fmt.Errorf("invalid PR id %q: %w", task.ID, err)
+	}
+
+	// Always remove conductor:reviewing.
+	_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, reviewingLabel)
+	if err != nil && !isNotFound(err) {
+		return fmt.Errorf("remove reviewing label: %w", err)
+	}
+
+	// Always remove conductor:needs-review.
+	_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, needsReviewLabel)
+	if err != nil && !isNotFound(err) {
+		return fmt.Errorf("remove needs-review label: %w", err)
+	}
+
+	if approved {
+		_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNum, []string{approvedLabel})
+		if err != nil {
+			return fmt.Errorf("add approved label: %w", err)
+		}
+		return nil
+	}
+
+	// Rejection: increment cycle counter.
+	newCycle := task.ReviewCycle + 1
+
+	// Remove old cycle label if present.
+	if task.ReviewCycle > 0 {
+		old := reviewCyclePrefix + strconv.Itoa(task.ReviewCycle)
+		_, _ = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, old) //nolint:errcheck
+	}
+
+	_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNum, []string{reviewCyclePrefix + strconv.Itoa(newCycle)})
+	if err != nil {
+		return fmt.Errorf("add review-cycle label: %w", err)
+	}
+
+	if newCycle >= 3 {
+		_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNum, []string{reviewAbandonedLabel})
+		if err != nil {
+			return fmt.Errorf("add review-abandoned label: %w", err)
+		}
+
+		commentBody := fmt.Sprintf("## Conductor: Review Abandoned\n\nAfter 3 QA review cycles, the implementation could not be brought into alignment with the spec.\n\n**Last QA feedback:** %s\n\nPlease review manually and either close this PR or push a revised implementation.",
+			body)
+		comment := &gh.IssueComment{Body: gh.Ptr(commentBody)}
+		_, _, err = s.client.Issues.CreateComment(ctx, s.owner, s.repo, prNum, comment)
+		if err != nil {
+			return fmt.Errorf("post abandonment comment: %w", err)
+		}
+		return nil
+	}
+
+	_, _, err = s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNum, []string{needsRevisionLabel})
+	if err != nil {
+		return fmt.Errorf("add needs-revision label: %w", err)
+	}
+	return nil
+}
+
+// prToReviewTask converts a GitHub PR to a review domain.Task.
+func prToReviewTask(pr *gh.PullRequest, repo string) *domain.Task {
+	labels := make([]string, 0, len(pr.Labels))
+	for _, l := range pr.Labels {
+		labels = append(labels, l.GetName())
+	}
+	specIssueNumber := parseIssueRef(pr)
+	return &domain.Task{
+		ID:              strconv.Itoa(pr.GetNumber()),
+		Title:           fmt.Sprintf("Review #%d: %s", pr.GetNumber(), pr.GetTitle()),
+		Labels:          labels,
+		Status:          domain.TaskStatusPending,
+		Source:          "github",
+		SourceURL:       pr.GetHTMLURL(),
+		Type:            domain.TaskTypeReview,
+		Branch:          pr.GetHead().GetRef(),
+		BaseBranch:      pr.GetBase().GetRef(),
+		SpecIssueNumber: specIssueNumber,
+	}
+}
+
+// prToReviseTask converts a GitHub PR to a revise domain.Task.
+func prToReviseTask(pr *gh.PullRequest, repo string) *domain.Task {
+	labels := make([]string, 0, len(pr.Labels))
+	for _, l := range pr.Labels {
+		labels = append(labels, l.GetName())
+	}
+	specIssueNumber := parseIssueRef(pr)
+	cycle := parseReviewCycle(pr)
+	return &domain.Task{
+		ID:              strconv.Itoa(pr.GetNumber()),
+		Title:           fmt.Sprintf("Revise #%d: %s", pr.GetNumber(), pr.GetTitle()),
+		Labels:          labels,
+		Status:          domain.TaskStatusPending,
+		Source:          "github",
+		SourceURL:       pr.GetHTMLURL(),
+		Type:            domain.TaskTypeRevise,
+		Branch:          pr.GetHead().GetRef(),
+		BaseBranch:      pr.GetBase().GetRef(),
+		SpecIssueNumber: specIssueNumber,
+		ReviewCycle:     cycle,
+	}
+}
+
+// parseIssueRef extracts the originating issue number from the conductor:issue-N label.
+func parseIssueRef(pr *gh.PullRequest) int {
+	for _, l := range pr.Labels {
+		name := l.GetName()
+		if strings.HasPrefix(name, issueRefPrefix) {
+			n, err := strconv.Atoi(strings.TrimPrefix(name, issueRefPrefix))
+			if err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// parseReviewCycle extracts the current review cycle from conductor:review-cycle-N labels.
+func parseReviewCycle(pr *gh.PullRequest) int {
+	for _, l := range pr.Labels {
+		name := l.GetName()
+		if strings.HasPrefix(name, reviewCyclePrefix) {
+			n, err := strconv.Atoi(strings.TrimPrefix(name, reviewCyclePrefix))
+			if err == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // prHasLabel returns true if the PR has the named label.

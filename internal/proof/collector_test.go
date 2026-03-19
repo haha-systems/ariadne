@@ -111,7 +111,7 @@ func TestCollect_CostUSD_WithRate(t *testing.T) {
 	// rate = $1.00 per 1k tokens; 1000 tokens → $1.00
 	est := &stubEstimator{rate: 1.0}
 
-	bundle, err := c.Collect(context.Background(), run, task, est)
+	bundle, err := c.Collect(context.Background(), run, task, est, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestCollect_CostUSD_NoRate(t *testing.T) {
 	// rate = 0 → no estimate
 	est := &stubEstimator{rate: 0}
 
-	bundle, err := c.Collect(context.Background(), run, task, est)
+	bundle, err := c.Collect(context.Background(), run, task, est, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestCollect_CostUSD_NilProvider(t *testing.T) {
 
 	c := New(Config{CICommand: []string{"true"}})
 
-	bundle, err := c.Collect(context.Background(), run, task, nil)
+	bundle, err := c.Collect(context.Background(), run, task, nil, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
