@@ -224,6 +224,138 @@ func TestBuildRebasePrompt_WithWorkflow(t *testing.T) {
 	}
 }
 
+func TestBuildReviewPrompt_Format(t *testing.T) {
+	repoDir := t.TempDir()
+
+	// Create QA persona AGENTS.md
+	personasDir := filepath.Join(repoDir, ".conductor", "personas", "qa-engineer")
+	os.MkdirAll(personasDir, 0755) //nolint:errcheck
+	os.WriteFile(filepath.Join(personasDir, "AGENTS.md"), []byte("You are a QA reviewer."), 0644) //nolint:errcheck
+
+	sup := &Supervisor{cfg: Config{RepoRoot: repoDir, TimeoutMinutes: 5}}
+	task := &domain.Task{
+		ID:              "7",
+		Type:            domain.TaskTypeReview,
+		SourceURL:       "https://github.com/org/repo/pull/7",
+		Branch:          "feat/my-feature",
+		ReviewCycle:     1,
+		SpecIssueNumber: 42,
+	}
+
+	prompt, err := sup.buildReviewPrompt(t.Context(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := string(prompt)
+
+	if !strings.Contains(s, "You are a QA reviewer.") {
+		t.Error("missing QA AGENTS.md content")
+	}
+	if !strings.Contains(s, "# Task: Review PR #7 — cycle 1 of 3") {
+		t.Error("missing review task title")
+	}
+	if !strings.Contains(s, "**PR:** https://github.com/org/repo/pull/7") {
+		t.Error("missing PR URL")
+	}
+	if !strings.Contains(s, "**Branch:** feat/my-feature") {
+		t.Error("missing branch")
+	}
+	if !strings.Contains(s, "**Original issue:** #42") {
+		t.Error("missing original issue number")
+	}
+	if !strings.Contains(s, "gh pr diff 7") {
+		t.Error("missing gh pr diff instruction")
+	}
+	if !strings.Contains(s, "gh pr review 7 --approve") {
+		t.Error("missing approve instruction")
+	}
+	if !strings.Contains(s, "gh pr review 7 --request-changes") {
+		t.Error("missing request-changes instruction")
+	}
+}
+
+func TestBuildReviewPrompt_NoPersonaFile(t *testing.T) {
+	repoDir := t.TempDir() // no qa-engineer persona
+
+	sup := &Supervisor{cfg: Config{RepoRoot: repoDir, TimeoutMinutes: 5}}
+	task := &domain.Task{
+		ID:              "7",
+		Type:            domain.TaskTypeReview,
+		SourceURL:       "https://github.com/org/repo/pull/7",
+		Branch:          "feat/my-feature",
+		ReviewCycle:     0,
+		SpecIssueNumber: 42,
+	}
+
+	prompt, err := sup.buildReviewPrompt(t.Context(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(prompt), "# Task: Review PR #7") {
+		t.Error("missing review task title when no persona file")
+	}
+}
+
+func TestBuildRevisionPrompt_Format(t *testing.T) {
+	repoDir := t.TempDir()
+
+	sup := &Supervisor{cfg: Config{RepoRoot: repoDir, TimeoutMinutes: 5}}
+	task := &domain.Task{
+		ID:              "7",
+		Type:            domain.TaskTypeRevise,
+		SourceURL:       "https://github.com/org/repo/pull/7",
+		Branch:          "feat/my-feature",
+		ReviewCycle:     1,
+		SpecIssueNumber: 42,
+	}
+
+	prompt, err := sup.buildRevisionPrompt(t.Context(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := string(prompt)
+
+	if !strings.Contains(s, "# Task: Address QA feedback on PR #7 — cycle 1 of 3") {
+		t.Error("missing revision task title")
+	}
+	if !strings.Contains(s, "**PR:** https://github.com/org/repo/pull/7") {
+		t.Error("missing PR URL")
+	}
+	if !strings.Contains(s, "**Branch:** feat/my-feature") {
+		t.Error("missing branch")
+	}
+	if !strings.Contains(s, "## Original Spec (Issue #42)") {
+		t.Error("missing original spec section")
+	}
+	if !strings.Contains(s, "## QA Feedback") {
+		t.Error("missing QA Feedback section")
+	}
+	if !strings.Contains(s, "address QA feedback (cycle 1)") {
+		t.Error("missing commit message with cycle number")
+	}
+	if !strings.Contains(s, "git push origin feat/my-feature") {
+		t.Error("missing push instruction")
+	}
+}
+
+func TestExtractRepoSlug(t *testing.T) {
+	cases := []struct {
+		url      string
+		expected string
+	}{
+		{"https://github.com/org/repo/pull/7", "org/repo"},
+		{"https://github.com/my-org/my-repo/issues/42", "my-org/my-repo"},
+		{"https://notgithub.com/org/repo/pull/1", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := extractRepoSlug(tc.url)
+		if got != tc.expected {
+			t.Errorf("extractRepoSlug(%q) = %q, want %q", tc.url, got, tc.expected)
+		}
+	}
+}
+
 func TestExecute_RebaseTask_TakesRebasePath(t *testing.T) {
 	// We verify that Execute() with a rebase task does NOT fall through to the
 	// issue path by checking it calls executeRebase (which tries git fetch).
