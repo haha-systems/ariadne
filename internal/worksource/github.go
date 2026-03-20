@@ -36,11 +36,13 @@ const (
 
 // GitHubSource polls a GitHub repository for issues and claims them via labels.
 type GitHubSource struct {
-	client         *gh.Client
-	owner          string
-	repo           string
-	labelFilter    []string
-	allowedAuthors []string // empty = allow all
+	client           *gh.Client
+	owner            string
+	repo             string
+	labelFilter      []string
+	allowedAuthors   []string // empty = allow all
+	installTransport *ghinstallation.Transport // non-nil when using GitHub App auth
+	staticToken      string                    // used when installTransport is nil
 }
 
 // NewGitHubSource creates a GitHubSource authenticated with the given token.
@@ -53,6 +55,7 @@ func NewGitHubSource(token, repo string, labelFilter []string, allowedAuthors []
 	owner, repoName := parts[0], parts[1]
 
 	var tc *http.Client
+	var installTransport *ghinstallation.Transport
 	appIDStr, keyPath := os.Getenv("GH_APP_APP_ID"), os.Getenv("GH_APP_PRIVATE_KEY_PATH")
 	if appIDStr != "" && keyPath != "" {
 		id, err := strconv.ParseInt(appIDStr, 10, 64)
@@ -68,23 +71,35 @@ func NewGitHubSource(token, repo string, labelFilter []string, allowedAuthors []
 		if err != nil {
 			return nil, fmt.Errorf("find installation: %w", err)
 		}
-		itr := ghinstallation.NewFromAppsTransport(atr, inst.GetID())
-		tc = &http.Client{Transport: itr}
+		installTransport = ghinstallation.NewFromAppsTransport(atr, inst.GetID())
+		tc = &http.Client{Transport: installTransport}
 	} else {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 		tc = oauth2.NewClient(context.Background(), ts)
 	}
 
 	return &GitHubSource{
-		client:         gh.NewClient(tc),
-		owner:          owner,
-		repo:           repoName,
-		labelFilter:    labelFilter,
-		allowedAuthors: allowedAuthors,
+		client:           gh.NewClient(tc),
+		owner:            owner,
+		repo:             repoName,
+		labelFilter:      labelFilter,
+		allowedAuthors:   allowedAuthors,
+		installTransport: installTransport,
+		staticToken:      token,
 	}, nil
 }
 
 func (s *GitHubSource) Name() string { return "github" }
+
+// Token returns a valid GitHub API token for the current authentication method.
+// When using GitHub App auth, this fetches a fresh installation token (auto-renewed
+// by the transport). When using a PAT, it returns the static token.
+func (s *GitHubSource) Token(ctx context.Context) (string, error) {
+	if s.installTransport != nil {
+		return s.installTransport.Token(ctx)
+	}
+	return s.staticToken, nil
+}
 
 // Poll fetches open issues that have all required labels but have NOT been claimed yet.
 func (s *GitHubSource) Poll(ctx context.Context) ([]*domain.Task, error) {

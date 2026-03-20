@@ -320,6 +320,7 @@ func executeRace(
 				Persona:      route.Persona,
 				Source:       source,
 				ReviewSource: source,
+				WorkSource:   source,
 			})
 			ch <- outcome{result: result, p: p}
 		}()
@@ -369,6 +370,7 @@ func executeRun(
 		Persona:      persona,
 		Source:       source,
 		ReviewSource: source,
+		WorkSource:   source,
 	})
 	if result.Err != nil {
 		log.Error("run failed", "run_id", run.ID, "error", result.Err)
