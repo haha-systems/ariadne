@@ -1066,16 +1066,16 @@ func writeMCPConfig(ctx context.Context, ts TokenSource) (path string, cleanup f
 	}
 
 	type mcpServer struct {
-		Command string            `json:"command"`
-		Args    []string          `json:"args"`
-		Env     map[string]string `json:"env"`
+		Type    string            `json:"type"`
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
 	}
 	config := map[string]map[string]mcpServer{
 		"mcpServers": {
 			"github": {
-				Command: "github-mcp-server",
-				Args:    []string{"stdio"},
-				Env:     map[string]string{"GITHUB_TOKEN": token},
+				Type: "http",
+				URL:  "https://api.githubcopilot.com/mcp",
+				Headers: map[string]string{"Authorization": "Bearer " + token},
 			},
 		},
 	}
