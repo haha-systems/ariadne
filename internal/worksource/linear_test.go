@@ -38,13 +38,13 @@ func TestLinearIssueToTask_FrontMatter(t *testing.T) {
 	issue := linearIssue{
 		ID:          "issue-abc",
 		Title:       "Add retry logic",
-		Description: "---\nconductor:\n  agent: claude\n---\nImplement retries",
+		Description: "---\nariadne:\n  agent: claude\n---\nImplement retries",
 		URL:         "https://linear.app/team/issue/ENG-42",
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
 	issue.Labels.Nodes = []struct{ Name string `json:"name"` }{
-		{Name: "conductor"},
+		{Name: "ariadne"},
 		{Name: "backend"},
 	}
 
