@@ -176,17 +176,16 @@ func TestDiscoverPersonas_IdentityFields(t *testing.T) {
 	dir := t.TempDir()
 	personasDir := filepath.Join(dir, ".conductor", "personas")
 
-	// Persona with all three new fields.
+	// Persona with display name and email.
 	withFieldsDir := filepath.Join(personasDir, "lead-engineer")
 	if err := os.MkdirAll(withFieldsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	toml := `provider = "claude"
+	tomlContent := `provider = "claude"
 name = "Alex"
 email = "alex@haha-systems.bot"
-github_token_env = "GITHUB_TOKEN_LEAD_ENGINEER"
 `
-	os.WriteFile(filepath.Join(withFieldsDir, "persona.toml"), []byte(toml), 0644) //nolint:errcheck
+	os.WriteFile(filepath.Join(withFieldsDir, "persona.toml"), []byte(tomlContent), 0644) //nolint:errcheck
 
 	// Persona with no persona.toml — fields should be empty strings.
 	noTomlDir := filepath.Join(personasDir, "no-toml")
@@ -206,9 +205,6 @@ github_token_env = "GITHUB_TOKEN_LEAD_ENGINEER"
 	if le.Email != "alex@haha-systems.bot" {
 		t.Errorf("expected Email=alex@haha-systems.bot, got %q", le.Email)
 	}
-	if le.GitHubTokenEnv != "GITHUB_TOKEN_LEAD_ENGINEER" {
-		t.Errorf("expected GitHubTokenEnv=GITHUB_TOKEN_LEAD_ENGINEER, got %q", le.GitHubTokenEnv)
-	}
 
 	nt, ok := personas["no-toml"]
 	if !ok {
@@ -219,9 +215,6 @@ github_token_env = "GITHUB_TOKEN_LEAD_ENGINEER"
 	}
 	if nt.Email != "" {
 		t.Errorf("expected empty Email, got %q", nt.Email)
-	}
-	if nt.GitHubTokenEnv != "" {
-		t.Errorf("expected empty GitHubTokenEnv, got %q", nt.GitHubTokenEnv)
 	}
 }
 

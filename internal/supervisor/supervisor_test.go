@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,19 @@ func TestMergeEnv_NilPerTask(t *testing.T) {
 	}
 }
 
+func TestMergeEnv_ThreeMaps(t *testing.T) {
+	a := map[string]string{"K": "a", "X": "1"}
+	b := map[string]string{"K": "b", "Y": "2"}
+	c := map[string]string{"K": "c", "Z": "3"}
+	merged := mergeEnv(a, b, c)
+	if merged["K"] != "c" {
+		t.Errorf("expected last map to win, got K=%s", merged["K"])
+	}
+	if merged["X"] != "1" || merged["Y"] != "2" || merged["Z"] != "3" {
+		t.Error("expected all unique keys to be present")
+	}
+}
+
 func TestTaskEnv_NilConfig(t *testing.T) {
 	task := &domain.Task{}
 	env := taskEnv(task)
@@ -52,6 +66,77 @@ func TestTaskEnv_WithConfig(t *testing.T) {
 	env := taskEnv(task)
 	if env["NODE_ENV"] != "test" {
 		t.Errorf("expected NODE_ENV=test, got %s", env["NODE_ENV"])
+	}
+}
+
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "init@test.com"},
+		{"config", "user.name", "Init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func TestConfigureGitAuthor_SetsNameAndEmail(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	persona := &config.PersonaConfig{
+		Name:        "lead-engineer",
+		DisplayName: "Lead Engineer",
+		Email:       "lead@example.com",
+	}
+	if err := configureGitAuthor(dir, persona); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for key, want := range map[string]string{
+		"user.name":  "Lead Engineer",
+		"user.email": "lead@example.com",
+	} {
+		out, err := exec.Command("git", "-C", dir, "config", key).Output()
+		if err != nil {
+			t.Fatalf("git config %s: %v", key, err)
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestConfigureGitAuthor_FallsBackToName(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	persona := &config.PersonaConfig{
+		Name:  "qa-engineer",
+		Email: "qa@example.com",
+		// DisplayName intentionally empty
+	}
+	if err := configureGitAuthor(dir, persona); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", dir, "config", "user.name").Output()
+	if err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "qa-engineer" {
+		t.Errorf("user.name = %q, want %q", got, "qa-engineer")
+	}
+}
+
+func TestConfigureGitAuthor_NilPersona(t *testing.T) {
+	// Should be a no-op with no error.
+	if err := configureGitAuthor(t.TempDir(), nil); err != nil {
+		t.Errorf("expected nil error for nil persona, got %v", err)
 	}
 }
 
