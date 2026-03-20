@@ -17,19 +17,19 @@ import (
 )
 
 const (
-	claimedLabel         = "conductor:claimed"
-	runningLabel         = "conductor:running"
-	rebasingLabel        = "conductor:rebasing"
-	rebaseAbandonedLabel = "conductor:rebase-abandoned"
-	rebaseAttemptsPrefix = "conductor:rebase-attempts-"
+	claimedLabel         = "ariadne:claimed"
+	runningLabel         = "ariadne:running"
+	rebasingLabel        = "ariadne:rebasing"
+	rebaseAbandonedLabel = "ariadne:rebase-abandoned"
+	rebaseAttemptsPrefix = "ariadne:rebase-attempts-"
 
-	needsReviewLabel     = "conductor:needs-review"
-	reviewingLabel       = "conductor:reviewing"
-	needsRevisionLabel   = "conductor:needs-revision"
-	revisingLabel        = "conductor:revising"
-	approvedLabel        = "conductor:approved"
-	reviewAbandonedLabel = "conductor:review-abandoned"
-	reviewCyclePrefix    = "conductor:review-cycle-"
+	needsReviewLabel     = "ariadne:needs-review"
+	reviewingLabel       = "ariadne:reviewing"
+	needsRevisionLabel   = "ariadne:needs-revision"
+	revisingLabel        = "ariadne:revising"
+	approvedLabel        = "ariadne:approved"
+	reviewAbandonedLabel = "ariadne:review-abandoned"
+	reviewCyclePrefix    = "ariadne:review-cycle-"
 )
 
 // GitHubSource polls a GitHub repository for issues and claims them via labels.
@@ -94,8 +94,8 @@ func (s *GitHubSource) Poll(ctx context.Context) ([]*domain.Task, error) {
 	return tasks, nil
 }
 
-// Claim adds the conductor:claimed label to the issue atomically, or
-// conductor:rebasing to the PR for rebase tasks.
+// Claim adds the ariadne:claimed label to the issue atomically, or
+// ariadne:rebasing to the PR for rebase tasks.
 func (s *GitHubSource) Claim(ctx context.Context, task *domain.Task) error {
 	num, err := strconv.Atoi(task.ID)
 	if err != nil {
@@ -142,7 +142,7 @@ func (s *GitHubSource) PostResult(ctx context.Context, task *domain.Task, summar
 	}
 
 	comment := &gh.IssueComment{
-		Body: gh.Ptr("## Conductor Run Complete\n\n" + summary),
+		Body: gh.Ptr("## Ariadne Run Complete\n\n" + summary),
 	}
 	_, _, err = s.client.Issues.CreateComment(ctx, s.owner, s.repo, issueNum, comment)
 	return err
@@ -207,8 +207,8 @@ func issueToTask(issue *gh.Issue, repo string) *domain.Task {
 
 // ListOpenPRs returns open PRs that are behind their base branch and eligible
 // for an automated rebase. PRs are skipped if they are already claimed
-// (conductor:rebasing), abandoned (conductor:rebase-abandoned), or have
-// exhausted all attempts (conductor:rebase-attempts-3).
+// (ariadne:rebasing), abandoned (ariadne:rebase-abandoned), or have
+// exhausted all attempts (ariadne:rebase-attempts-3).
 func (s *GitHubSource) ListOpenPRs(ctx context.Context) ([]*domain.Task, error) {
 	opts := &gh.PullRequestListOptions{
 		State: "open",
@@ -252,8 +252,8 @@ func (s *GitHubSource) ListOpenPRs(ctx context.Context) ([]*domain.Task, error) 
 }
 
 // RecordRebaseOutcome updates labels and optionally posts a comment after a
-// rebase attempt. On success, removes conductor:rebasing. On failure,
-// increments the attempt counter; after 3 failures adds conductor:rebase-abandoned
+// rebase attempt. On success, removes ariadne:rebasing. On failure,
+// increments the attempt counter; after 3 failures adds ariadne:rebase-abandoned
 // and posts an abandonment comment.
 func (s *GitHubSource) RecordRebaseOutcome(ctx context.Context, task *domain.Task, succeeded bool, reason string) error {
 	prNum, err := strconv.Atoi(task.ID)
@@ -261,7 +261,7 @@ func (s *GitHubSource) RecordRebaseOutcome(ctx context.Context, task *domain.Tas
 		return fmt.Errorf("invalid PR id %q: %w", task.ID, err)
 	}
 
-	// Always remove conductor:rebasing.
+	// Always remove ariadne:rebasing.
 	_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, rebasingLabel)
 	if err != nil {
 		// Ignore 404 — label may not be present.
@@ -292,7 +292,7 @@ func (s *GitHubSource) RecordRebaseOutcome(ctx context.Context, task *domain.Tas
 			return fmt.Errorf("add rebase-abandoned label: %w", err)
 		}
 
-		body := fmt.Sprintf("## Conductor: Rebase Abandoned\n\nAfter 3 attempts, the conductor was unable to rebase this branch onto `%s`.\n\n**Last error:** %s\n\nPlease rebase manually and force-push, or close and re-open the PR.",
+		body := fmt.Sprintf("## Ariadne: Rebase Abandoned\n\nAfter 3 attempts, the conductor was unable to rebase this branch onto `%s`.\n\n**Last error:** %s\n\nPlease rebase manually and force-push, or close and re-open the PR.",
 			task.BaseBranch, reason)
 		comment := &gh.IssueComment{Body: gh.Ptr(body)}
 		_, _, err = s.client.Issues.CreateComment(ctx, s.owner, s.repo, prNum, comment)
@@ -304,7 +304,7 @@ func (s *GitHubSource) RecordRebaseOutcome(ctx context.Context, task *domain.Tas
 	return nil
 }
 
-// MarkPRNeedsReview adds conductor:needs-review to the PR.
+// MarkPRNeedsReview adds ariadne:needs-review to the PR.
 func (s *GitHubSource) MarkPRNeedsReview(ctx context.Context, prNumber int, issueNumber int) error {
 	_, _, err := s.client.Issues.AddLabelsToIssue(ctx, s.owner, s.repo, prNumber, []string{needsReviewLabel})
 	if err != nil {
@@ -313,7 +313,7 @@ func (s *GitHubSource) MarkPRNeedsReview(ctx context.Context, prNumber int, issu
 	return nil
 }
 
-// ListPRsNeedingReview returns open PRs labelled conductor:needs-review that
+// ListPRsNeedingReview returns open PRs labelled ariadne:needs-review that
 // are not currently being reviewed or in a terminal state.
 func (s *GitHubSource) ListPRsNeedingReview(ctx context.Context) ([]*domain.Task, error) {
 	opts := &gh.PullRequestListOptions{
@@ -340,7 +340,7 @@ func (s *GitHubSource) ListPRsNeedingReview(ctx context.Context) ([]*domain.Task
 	return tasks, nil
 }
 
-// ListPRsNeedingRevision returns open PRs labelled conductor:needs-revision
+// ListPRsNeedingRevision returns open PRs labelled ariadne:needs-revision
 // that are not already being revised or in a terminal state.
 func (s *GitHubSource) ListPRsNeedingRevision(ctx context.Context) ([]*domain.Task, error) {
 	opts := &gh.PullRequestListOptions{
@@ -372,13 +372,13 @@ func (s *GitHubSource) RecordReviewOutcome(ctx context.Context, task *domain.Tas
 		return fmt.Errorf("invalid PR id %q: %w", task.ID, err)
 	}
 
-	// Always remove conductor:reviewing.
+	// Always remove ariadne:reviewing.
 	_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, reviewingLabel)
 	if err != nil && !isNotFound(err) {
 		return fmt.Errorf("remove reviewing label: %w", err)
 	}
 
-	// Always remove conductor:needs-review.
+	// Always remove ariadne:needs-review.
 	_, err = s.client.Issues.RemoveLabelForIssue(ctx, s.owner, s.repo, prNum, needsReviewLabel)
 	if err != nil && !isNotFound(err) {
 		return fmt.Errorf("remove needs-review label: %w", err)
@@ -412,7 +412,7 @@ func (s *GitHubSource) RecordReviewOutcome(ctx context.Context, task *domain.Tas
 			return fmt.Errorf("add review-abandoned label: %w", err)
 		}
 
-		commentBody := fmt.Sprintf("## Conductor: Review Abandoned\n\nAfter 3 QA review cycles, the implementation could not be brought into alignment with the spec.\n\n**Last QA feedback:** %s\n\nPlease review manually and either close this PR or push a revised implementation.",
+		commentBody := fmt.Sprintf("## Ariadne: Review Abandoned\n\nAfter 3 QA review cycles, the implementation could not be brought into alignment with the spec.\n\n**Last QA feedback:** %s\n\nPlease review manually and either close this PR or push a revised implementation.",
 			body)
 		comment := &gh.IssueComment{Body: gh.Ptr(commentBody)}
 		_, _, err = s.client.Issues.CreateComment(ctx, s.owner, s.repo, prNum, comment)
@@ -485,7 +485,7 @@ func parseIssueRef(pr *gh.PullRequest) int {
 	return n
 }
 
-// parseReviewCycle extracts the current review cycle from conductor:review-cycle-N labels.
+// parseReviewCycle extracts the current review cycle from ariadne:review-cycle-N labels.
 func parseReviewCycle(pr *gh.PullRequest) int {
 	for _, l := range pr.Labels {
 		name := l.GetName()
