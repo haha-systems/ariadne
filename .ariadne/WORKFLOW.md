@@ -13,7 +13,7 @@ resolved in-session.
 
 ## Progress tracking
 
-Use `.conductor/workpad.md` in your worktree for all planning, notes, and
+Use `.ariadne/workpad.md` in your worktree for all planning, notes, and
 checklists. It's a local file — reads and writes cost nothing.
 
 Post to the issue only for state transitions and blockers. Conductor posts the
@@ -21,7 +21,7 @@ final run summary automatically; do not post a separate completion comment.
 
 ## Workpad template
 
-Create this file at `.conductor/workpad.md` at the start of every run:
+Create this file at `.ariadne/workpad.md` at the start of every run:
 
     ## Plan
     - [ ] 1. Task
@@ -52,7 +52,7 @@ Create this file at `.conductor/workpad.md` at the start of every run:
    - **Merging** → rebase on main, confirm CI green, merge via `gh pr merge --rebase --delete-branch`.
    - **Done / Cancelled** → nothing to do; stop.
 3. Move issue to **In Progress** if it isn't already.
-4. Create `.conductor/workpad.md` (fresh run) or open and reconcile it (retry).
+4. Create `.ariadne/workpad.md` (fresh run) or open and reconcile it (retry).
 5. Sync: `git fetch origin && git rebase origin/main` — record resulting HEAD SHA in Notes.
 
 ## Step 1 — Reproduce and plan
@@ -79,7 +79,7 @@ Create this file at `.conductor/workpad.md` at the start of every run:
 1. Push branch and open a PR targeting `main`. Include `Closes #<issue-number>`
    in the PR body (the issue number is in the task header above):
    `gh pr create --title "..." --body "Closes #N\n\n..." --repo <owner/repo>`
-2. Capture the PR URL and write it to `.conductor/metadata.json`:
+2. Capture the PR URL and write it to `.ariadne/metadata.json`:
    ```json
    {"pr_url": "https://github.com/org/repo/pull/N"}
    ```
@@ -95,7 +95,7 @@ Treat Rework as a full reset, not a patch:
 
 1. Read the full issue and all comments to understand what to do differently.
 2. Close the existing PR.
-3. Delete `.conductor/workpad.md`.
+3. Delete `.ariadne/workpad.md`.
 4. Create a fresh branch from `origin/main`.
 5. Restart from Step 0 as a new attempt.
 

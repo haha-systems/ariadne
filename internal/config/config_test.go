@@ -37,7 +37,7 @@ default_provider = "claude"
 	if cfg.Sandbox.TimeoutMinutes != 45 {
 		t.Errorf("expected default timeout_minutes=45, got %d", cfg.Sandbox.TimeoutMinutes)
 	}
-	if cfg.Sandbox.WorktreeDir != ".conductor/runs" {
+	if cfg.Sandbox.WorktreeDir != ".ariadne/runs" {
 		t.Errorf("unexpected worktree_dir: %s", cfg.Sandbox.WorktreeDir)
 	}
 }
@@ -70,7 +70,7 @@ require_ci_pass = true
 pr_base_branch = "main"
 
 [sandbox]
-worktree_dir = ".conductor/runs"
+worktree_dir = ".ariadne/runs"
 timeout_minutes = 30
 preserve_on_failure = true
 `)
@@ -133,7 +133,7 @@ func TestDiscoverPersonas_NoDir(t *testing.T) {
 
 func TestDiscoverPersonas_WithPersonas(t *testing.T) {
 	dir := t.TempDir()
-	personasDir := filepath.Join(dir, ".conductor", "personas")
+	personasDir := filepath.Join(dir, ".ariadne", "personas")
 
 	// Create lead-engineer persona with SOUL.md and CLAUDE.md.
 	leDir := filepath.Join(personasDir, "lead-engineer")
@@ -174,7 +174,7 @@ func TestDiscoverPersonas_WithPersonas(t *testing.T) {
 
 func TestDiscoverPersonas_IdentityFields(t *testing.T) {
 	dir := t.TempDir()
-	personasDir := filepath.Join(dir, ".conductor", "personas")
+	personasDir := filepath.Join(dir, ".ariadne", "personas")
 
 	// Persona with display name and email.
 	withFieldsDir := filepath.Join(personasDir, "lead-engineer")

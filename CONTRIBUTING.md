@@ -29,12 +29,12 @@ Follow the existing convention:
 
 1. Create a file in `internal/provider/` (e.g. `myprovider.go`).
 2. Implement the `AgentProvider` interface defined in `internal/provider/provider.go`.
-3. Register the provider in `buildProviders` in `cmd/conductor/main.go`.
+3. Register the provider in `buildProviders` in `cmd/ariadne/main.go`.
 4. Add an entry to the Providers table in `README.md`.
 
 ## Adding a new work source
 
 1. Create a file in `internal/worksource/` (e.g. `myplatform.go`).
 2. Implement the `WorkSource` interface defined in `internal/worksource/worksource.go`.
-3. Register the source in `buildWorkSource` in `cmd/conductor/main.go`.
+3. Register the source in `buildWorkSource` in `cmd/ariadne/main.go`.
 4. Add configuration documentation to `README.md` under **Work sources**.

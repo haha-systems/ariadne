@@ -40,7 +40,7 @@ type RunHandle interface {
 
 // AgentProvider is the interface all provider adapters must implement.
 type AgentProvider interface {
-	// Name returns the provider's unique identifier (matches conductor.toml key).
+	// Name returns the provider's unique identifier (matches ariadne.toml key).
 	Name() string
 	// Capabilities returns the set of capabilities this provider supports.
 	Capabilities() []Capability

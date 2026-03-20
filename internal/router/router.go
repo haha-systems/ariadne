@@ -10,9 +10,9 @@ import (
 
 	charmlog "github.com/charmbracelet/log"
 
-	"github.com/haha-systems/conductor/internal/config"
-	"github.com/haha-systems/conductor/internal/domain"
-	"github.com/haha-systems/conductor/internal/provider"
+	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/provider"
 )
 
 // Router selects a provider (or providers, in race mode) for a given task.

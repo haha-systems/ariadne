@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 const linearAPIURL = "https://api.linear.app/graphql"

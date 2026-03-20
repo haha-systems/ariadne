@@ -14,13 +14,13 @@ import (
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
-	"github.com/haha-systems/conductor/internal/config"
-	"github.com/haha-systems/conductor/internal/domain"
-	"github.com/haha-systems/conductor/internal/proof"
-	"github.com/haha-systems/conductor/internal/provider"
-	"github.com/haha-systems/conductor/internal/router"
-	"github.com/haha-systems/conductor/internal/supervisor"
-	"github.com/haha-systems/conductor/internal/worksource"
+	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/proof"
+	"github.com/haha-systems/ariadne/internal/provider"
+	"github.com/haha-systems/ariadne/internal/router"
+	"github.com/haha-systems/ariadne/internal/supervisor"
+	"github.com/haha-systems/ariadne/internal/worksource"
 )
 
 var version = "dev"
@@ -38,7 +38,7 @@ func rootCmd() *cobra.Command {
 		Use:   "conductor",
 		Short: "Multi-provider coding agent orchestrator",
 	}
-	root.PersistentFlags().StringVar(&cfgPath, "config", "conductor.toml", "path to conductor.toml")
+	root.PersistentFlags().StringVar(&cfgPath, "config", "ariadne.toml", "path to ariadne.toml")
 
 	root.AddCommand(
 		runCmd(&cfgPath),
@@ -472,7 +472,7 @@ func buildWorkSource(cfg *config.Config) (worksource.WorkSource, error) {
 		}
 		return worksource.NewLinearSource(token, cfg.WorkSources.Linear.TeamID, cfg.WorkSources.Linear.StateFilter)
 	}
-	return nil, fmt.Errorf("no work source configured — add [work_sources.github] or [work_sources.linear] to conductor.toml")
+	return nil, fmt.Errorf("no work source configured — add [work_sources.github] or [work_sources.linear] to ariadne.toml")
 }
 
 func repoRoot() string {

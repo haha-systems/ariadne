@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/haha-systems/conductor/internal/config"
-	"github.com/haha-systems/conductor/internal/domain"
-	"github.com/haha-systems/conductor/internal/provider"
+	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/provider"
 )
 
 type stubProvider struct {

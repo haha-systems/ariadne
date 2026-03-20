@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 func TestParseShortstat(t *testing.T) {
@@ -83,12 +83,12 @@ func (s *stubEstimator) CostEstimate(promptLen int) (float64, bool) {
 func TestCollect_CostUSD_WithRate(t *testing.T) {
 	dir := t.TempDir()
 
-	// Write a fake .conductor-task.md (4000 bytes → 1000 tokens).
+	// Write a fake .ariadne-task.md (4000 bytes → 1000 tokens).
 	prompt := make([]byte, 4000)
 	for i := range prompt {
 		prompt[i] = 'x'
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".conductor-task.md"), prompt, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".ariadne-task.md"), prompt, 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Create proof/ dir so writeSummary can write.
@@ -127,7 +127,7 @@ func TestCollect_CostUSD_WithRate(t *testing.T) {
 
 func TestCollect_CostUSD_NoRate(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".conductor-task.md"), []byte("task"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".ariadne-task.md"), []byte("task"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "proof"), 0755); err != nil {

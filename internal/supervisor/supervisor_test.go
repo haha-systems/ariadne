@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/haha-systems/conductor/internal/config"
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 func TestMergeEnv(t *testing.T) {
@@ -313,7 +313,7 @@ func TestBuildReviewPrompt_Format(t *testing.T) {
 	repoDir := t.TempDir()
 
 	// Create QA persona AGENTS.md
-	personasDir := filepath.Join(repoDir, ".conductor", "personas", "qa-engineer")
+	personasDir := filepath.Join(repoDir, ".ariadne", "personas", "qa-engineer")
 	os.MkdirAll(personasDir, 0755) //nolint:errcheck
 	os.WriteFile(filepath.Join(personasDir, "AGENTS.md"), []byte("You are a QA reviewer."), 0644) //nolint:errcheck
 
@@ -449,7 +449,7 @@ func TestExecute_RebaseTask_TakesRebasePath(t *testing.T) {
 	repoDir := t.TempDir()
 	sup := New(Config{
 		RepoRoot:       repoDir,
-		WorktreeBaseDir: ".conductor/runs",
+		WorktreeBaseDir: ".ariadne/runs",
 		TimeoutMinutes: 1,
 	})
 	task := &domain.Task{

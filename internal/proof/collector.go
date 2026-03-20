@@ -14,7 +14,7 @@ import (
 
 	charmlog "github.com/charmbracelet/log"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 // CostEstimator is implemented by provider adapters that can estimate run cost.
@@ -82,7 +82,7 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 
 	// 4. Cost estimate from provider (best-effort; zero if not available).
 	if provider != nil {
-		if promptData, err := os.ReadFile(filepath.Join(run.WorktreePath, ".conductor-task.md")); err == nil {
+		if promptData, err := os.ReadFile(filepath.Join(run.WorktreePath, ".ariadne-task.md")); err == nil {
 			if cost, ok := provider.CostEstimate(len(promptData)); ok {
 				bundle.CostUSD = cost
 			}
@@ -118,10 +118,10 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 	return bundle, nil
 }
 
-// readAgentMetadata merges fields from .conductor/metadata.json (written by the
+// readAgentMetadata merges fields from .ariadne/metadata.json (written by the
 // agent) into bundle. Unknown fields are ignored; missing file is not an error.
 func readAgentMetadata(worktreePath string, bundle *domain.ProofBundle) {
-	path := filepath.Join(worktreePath, ".conductor", "metadata.json")
+	path := filepath.Join(worktreePath, ".ariadne", "metadata.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
