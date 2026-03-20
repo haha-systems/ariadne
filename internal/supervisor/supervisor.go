@@ -20,6 +20,13 @@ import (
 	"github.com/haha-systems/ariadne/internal/provider"
 )
 
+// TokenSource is satisfied by any WorkSource that can provide a GitHub API token
+// for injection into agent subprocess environments. It is used by the supervisor
+// without importing the worksource package directly.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
+
 // RebaseRecorder is satisfied by any WorkSource that supports rebase outcome
 // recording. It is used by the supervisor without importing the worksource package.
 type RebaseRecorder interface {
@@ -46,6 +53,10 @@ type RunRequest struct {
 	Source RebaseRecorder
 	// ReviewSource is used by review/revise tasks to record outcomes. Nil is safe for other task types.
 	ReviewSource ReviewRecorder
+	// WorkSource optionally provides a GitHub token to inject as GITHUB_TOKEN into
+	// agent subprocess environments. If it implements TokenSource, the token is
+	// injected; otherwise no injection occurs. Nil is safe.
+	WorkSource any
 }
 
 // Result is returned by the supervisor after a run terminates.
@@ -144,7 +155,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	defer cancel()
 
 	// 6. Build env: merge global + per-task.
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	env := buildEnv(ctx, req)
 
 	rc := provider.RunContext{
 		RepoPath:       worktreePath,
@@ -304,6 +315,19 @@ func mergeEnv(maps ...map[string]string) map[string]string {
 		}
 	}
 	return merged
+}
+
+// buildEnv builds the agent subprocess environment: merges global and per-task vars,
+// then injects GITHUB_TOKEN from WorkSource (if available) so gh CLI calls inside
+// the agent use the GitHub App installation token rather than the user's PAT.
+func buildEnv(ctx context.Context, req RunRequest) map[string]string {
+	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	if ts, ok := req.WorkSource.(TokenSource); ok {
+		if tok, err := ts.Token(ctx); err == nil && tok != "" {
+			env["GITHUB_TOKEN"] = tok
+		}
+	}
+	return env
 }
 
 // configureGitAuthor sets git user.name and user.email in the worktree so
@@ -533,7 +557,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	env := buildEnv(ctx, req)
 	rc := provider.RunContext{
 		RepoPath:       worktreePath,
 		TaskFile:       taskFile,
@@ -639,7 +663,7 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	env := buildEnv(ctx, req)
 	rc := provider.RunContext{
 		RepoPath:       s.cfg.RepoRoot,
 		TaskFile:       taskFile,
@@ -760,7 +784,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	env := mergeEnv(req.GlobalEnv, taskEnv(req.Task))
+	env := buildEnv(ctx, req)
 	rc := provider.RunContext{
 		RepoPath:       worktreePath,
 		TaskFile:       taskFile,

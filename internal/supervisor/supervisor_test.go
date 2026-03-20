@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,11 @@ import (
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
 )
+
+// mockTokenSource implements TokenSource for testing.
+type mockTokenSource struct{ token string }
+
+func (m *mockTokenSource) Token(_ context.Context) (string, error) { return m.token, nil }
 
 func TestMergeEnv(t *testing.T) {
 	global := map[string]string{"A": "1", "B": "2"}
@@ -66,6 +72,49 @@ func TestTaskEnv_WithConfig(t *testing.T) {
 	env := taskEnv(task)
 	if env["NODE_ENV"] != "test" {
 		t.Errorf("expected NODE_ENV=test, got %s", env["NODE_ENV"])
+	}
+}
+
+func TestBuildEnv_InjectsGitHubToken(t *testing.T) {
+	task := &domain.Task{}
+	req := RunRequest{
+		Task:       task,
+		GlobalEnv:  map[string]string{"X": "1"},
+		WorkSource: &mockTokenSource{token: "ghs_test_token"},
+	}
+	env := buildEnv(context.Background(), req)
+	if env["GITHUB_TOKEN"] != "ghs_test_token" {
+		t.Errorf("expected GITHUB_TOKEN=ghs_test_token, got %q", env["GITHUB_TOKEN"])
+	}
+	if env["X"] != "1" {
+		t.Errorf("expected X=1, got %q", env["X"])
+	}
+}
+
+func TestBuildEnv_NoTokenSource(t *testing.T) {
+	task := &domain.Task{}
+	req := RunRequest{
+		Task:       task,
+		GlobalEnv:  map[string]string{"X": "1"},
+		WorkSource: nil,
+	}
+	env := buildEnv(context.Background(), req)
+	if _, ok := env["GITHUB_TOKEN"]; ok {
+		t.Errorf("expected no GITHUB_TOKEN when WorkSource is nil, got %q", env["GITHUB_TOKEN"])
+	}
+}
+
+func TestBuildEnv_NonTokenSourceWorkSource(t *testing.T) {
+	// A WorkSource that does not implement TokenSource should not inject GITHUB_TOKEN.
+	type noopSource struct{}
+	task := &domain.Task{}
+	req := RunRequest{
+		Task:       task,
+		WorkSource: &noopSource{},
+	}
+	env := buildEnv(context.Background(), req)
+	if _, ok := env["GITHUB_TOKEN"]; ok {
+		t.Errorf("expected no GITHUB_TOKEN when WorkSource lacks Token(), got %q", env["GITHUB_TOKEN"])
 	}
 }
 
