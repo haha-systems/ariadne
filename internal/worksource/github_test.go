@@ -12,7 +12,7 @@ import (
 	gh "github.com/google/go-github/v68/github"
 	"golang.org/x/oauth2"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 // newTestGitHubSource creates a GitHubSource pointed at a test HTTP server.

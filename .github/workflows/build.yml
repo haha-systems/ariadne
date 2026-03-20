@@ -20,10 +20,10 @@ jobs:
           cache: true
       - name: Build (non-Windows)
         if: runner.os != 'Windows'
-        run: go build -o conductor-${{ runner.os }} ./cmd/conductor
+        run: go build -o conductor-${{ runner.os }} ./cm./ariadne
       - name: Build (Windows)
         if: runner.os == 'Windows'
-        run: go build -o conductor-${{ runner.os }}.exe ./cmd/conductor
+        run: go build -o conductor-${{ runner.os }}.exe ./cm./ariadne
       - name: Upload artifact (non-Windows)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4

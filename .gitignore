@@ -1,6 +1,6 @@
 .DS_Store
 .env*
 node_modules
-/conductor
-.conductor/runs/
-conductor.toml
+/ariadne
+.ariadne/runs/
+ariadne.toml

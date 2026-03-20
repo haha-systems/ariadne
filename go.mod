@@ -1,4 +1,4 @@
-module github.com/haha-systems/conductor
+module github.com/haha-systems/ariadne
 
 go 1.24.0
 

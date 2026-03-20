@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// CustomAdapter runs any command-line agent specified in conductor.toml.
+// CustomAdapter runs any command-line agent specified in ariadne.toml.
 // Template variables in extraArgs are substituted before execution:
 //
 //	{{task_file}} → RunContext.TaskFile

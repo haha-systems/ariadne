@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 // mockSource is a controllable WorkSource for testing.

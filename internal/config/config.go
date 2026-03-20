@@ -8,7 +8,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config is the top-level conductor.toml structure.
+// Config is the top-level ariadne.toml structure.
 type Config struct {
 	Conductor   ConductorConfig           `toml:"conductor"`
 	WorkSources WorkSourcesConfig         `toml:"work_sources"`
@@ -68,7 +68,7 @@ type SandboxConfig struct {
 	WorkflowFile      string `toml:"workflow_file"`
 }
 
-// PersonaConfig describes a named agent persona discovered from .conductor/personas/<name>/.
+// PersonaConfig describes a named agent persona discovered from .ariadne/personas/<name>/.
 type PersonaConfig struct {
 	Name        string // populated from directory name
 	Provider    string `toml:"provider"` // from persona.toml, optional
@@ -84,8 +84,8 @@ type personaTOML struct {
 	Email    string `toml:"email"`
 }
 
-// Load reads and parses a conductor.toml file, applying defaults.
-// repoRoot is the directory containing conductor.toml (used to discover personas).
+// Load reads and parses a ariadne.toml file, applying defaults.
+// repoRoot is the directory containing ariadne.toml (used to discover personas).
 func Load(path string) (*Config, error) {
 	cfg := defaults()
 
@@ -125,10 +125,10 @@ func defaults() *Config {
 			PRBaseBranch: "main",
 		},
 		Sandbox: SandboxConfig{
-			WorktreeDir:       ".conductor/runs",
+			WorktreeDir:       ".ariadne/runs",
 			TimeoutMinutes:    45,
 			PreserveOnFailure: true,
-			WorkflowFile:      ".conductor/WORKFLOW.md",
+			WorkflowFile:      ".ariadne/WORKFLOW.md",
 		},
 		Providers: map[string]ProviderConfig{},
 		Personas:  map[string]PersonaConfig{},
@@ -153,10 +153,10 @@ func validate(cfg *Config) error {
 	return nil
 }
 
-// discoverPersonas scans <repoRoot>/.conductor/personas/ for subdirectories.
+// discoverPersonas scans <repoRoot>/.ariadne/personas/ for subdirectories.
 // Returns an empty map if the directory doesn't exist.
 func discoverPersonas(repoRoot string) map[string]PersonaConfig {
-	personasDir := filepath.Join(repoRoot, ".conductor", "personas")
+	personasDir := filepath.Join(repoRoot, ".ariadne", "personas")
 	entries, err := os.ReadDir(personasDir)
 	if err != nil {
 		return map[string]PersonaConfig{} // directory absent — not an error

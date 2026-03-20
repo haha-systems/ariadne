@@ -3,7 +3,7 @@ package worksource
 import (
 	"context"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 // WorkSource is the interface all work source implementations must satisfy.

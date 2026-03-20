@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 func TestNewLinearSource_MissingToken(t *testing.T) {

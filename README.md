@@ -13,15 +13,15 @@ Conductor is a multi-provider coding agent orchestrator. It polls a work source 
 ## Installation
 
 ```bash
-go install github.com/haha-systems/conductor/cmd/conductor@latest
+go install github.com/haha-systems/ariadne/cmd/ariadne@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/haha-systems/conductor
+git clone https://github.com/haha-systems/ariadne
 cd conductor
-go build -o conductor ./cmd/conductor
+go build -o conductor ./cmd/ariadne
 ```
 
 Requires Go 1.25+.
@@ -31,7 +31,7 @@ Requires Go 1.25+.
 1. Copy and edit the sample config:
 
 ```bash
-cp conductor.toml.example conductor.toml   # or start from the snippet below
+cp ariadne.toml.example ariadne.toml   # or start from the snippet below
 ```
 
 2. Export credentials:
@@ -50,7 +50,7 @@ conductor run
 
 ## Configuration
 
-All configuration lives in `conductor.toml`.
+All configuration lives in `ariadne.toml`.
 
 ```toml
 [conductor]
@@ -97,10 +97,10 @@ require_ci_pass = true
 pr_base_branch  = "main"
 
 [sandbox]
-worktree_dir        = ".conductor/runs"
+worktree_dir        = ".ariadne/runs"
 timeout_minutes     = 45
 preserve_on_failure = true
-workflow_file       = ".conductor/WORKFLOW.md"
+workflow_file       = ".ariadne/WORKFLOW.md"
 
 # Shell commands run after every successful run (receives summary path as $1):
 # hooks = ["./scripts/notify.sh"]
@@ -146,7 +146,7 @@ Task description goes here.
 ## CLI reference
 
 ```
-conductor [--config conductor.toml] <command>
+conductor [--config ariadne.toml] <command>
 ```
 
 | Command                         | Description                                          |
@@ -193,28 +193,28 @@ After a successful run, Conductor writes a `proof/summary.json` file inside the 
 
 Use `conductor land --run-id <id>` to rebase the worktree branch on `main`, wait for CI to pass, and merge automatically.
 
-## `.conductor/` directory structure
+## `.ariadne/` directory structure
 
-Conductor looks for several files inside a `.conductor/` directory at the root of your repo. None are required, but they let you customise how agents behave.
+Conductor looks for several files inside a `.ariadne/` directory at the root of your repo. None are required, but they let you customise how agents behave.
 
 | Path | Purpose |
 |------|---------|
-| `.conductor/WORKFLOW.md` | Injected at the top of every task prompt — use for global agent instructions |
-| `.conductor/REBASE_WORKFLOW.md` | Injected into rebase task prompts (optional, falls back to none) |
-| `.conductor/personas/<name>/` | Persona directory — see Personas section |
-| `.conductor/personas/<name>/SOUL.md` | Core identity injected as the Role section of the task prompt |
-| `.conductor/personas/<name>/PERSONALITY.md` | Behavioral traits appended to the Role section |
-| `.conductor/personas/<name>/CLAUDE.md` | Copied to the worktree root before the agent runs |
-| `.conductor/personas/<name>/AGENTS.md` | Replaces `WORKFLOW.md` for this persona |
-| `.conductor/personas/<name>/persona.toml` | Optional: `provider = "claude"` to override the default provider |
-| `.conductor/runs/` | Auto-managed run worktrees (configured via `worktree_dir`) |
+| `.ariadne/WORKFLOW.md` | Injected at the top of every task prompt — use for global agent instructions |
+| `.ariadne/REBASE_WORKFLOW.md` | Injected into rebase task prompts (optional, falls back to none) |
+| `.ariadne/personas/<name>/` | Persona directory — see Personas section |
+| `.ariadne/personas/<name>/SOUL.md` | Core identity injected as the Role section of the task prompt |
+| `.ariadne/personas/<name>/PERSONALITY.md` | Behavioral traits appended to the Role section |
+| `.ariadne/personas/<name>/CLAUDE.md` | Copied to the worktree root before the agent runs |
+| `.ariadne/personas/<name>/AGENTS.md` | Replaces `WORKFLOW.md` for this persona |
+| `.ariadne/personas/<name>/persona.toml` | Optional: `provider = "claude"` to override the default provider |
+| `.ariadne/runs/` | Auto-managed run worktrees (configured via `worktree_dir`) |
 
 The `workflow_file` and `worktree_dir` config keys control which paths Conductor uses:
 
 ```toml
 [sandbox]
-worktree_dir  = ".conductor/runs"
-workflow_file = ".conductor/WORKFLOW.md"
+worktree_dir  = ".ariadne/runs"
+workflow_file = ".ariadne/WORKFLOW.md"
 ```
 
 ## License

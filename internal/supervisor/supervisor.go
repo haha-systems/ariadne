@@ -15,9 +15,9 @@ import (
 
 	charmlog "github.com/charmbracelet/log"
 
-	"github.com/haha-systems/conductor/internal/config"
-	"github.com/haha-systems/conductor/internal/domain"
-	"github.com/haha-systems/conductor/internal/provider"
+	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/provider"
 )
 
 // RebaseRecorder is satisfied by any WorkSource that supports rebase outcome
@@ -38,7 +38,7 @@ type RunRequest struct {
 	Run      *domain.Run
 	Task     *domain.Task
 	Provider provider.AgentProvider
-	// GlobalEnv are extra env vars from conductor.toml [sandbox].
+	// GlobalEnv are extra env vars from ariadne.toml [sandbox].
 	GlobalEnv map[string]string
 	// Persona is the resolved persona for this run, or nil if none.
 	Persona *config.PersonaConfig
@@ -115,7 +115,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	}
 
 	// 3. Write task prompt to file.
-	taskFile := filepath.Join(worktreePath, ".conductor-task.md")
+	taskFile := filepath.Join(worktreePath, ".ariadne-task.md")
 	workflow := s.loadWorkflow(req.Persona)
 	prompt := buildTaskPrompt(req.Task, workflow, req.Persona)
 	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
@@ -504,7 +504,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	// Build rebase prompt.
 	workflow := s.loadRebaseWorkflow()
 	prompt := buildRebasePrompt(req.Task, workflow)
-	taskFile := filepath.Join(worktreePath, ".conductor-task.md")
+	taskFile := filepath.Join(worktreePath, ".ariadne-task.md")
 	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
 		s.recordRebaseOutcome(ctx, req, false, err.Error())
 		s.cleanup(run)
@@ -616,7 +616,7 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 	}
 
 	// Write prompt to a temp file in the repo root.
-	taskFile := filepath.Join(s.cfg.RepoRoot, ".conductor-review-"+run.ID+".md")
+	taskFile := filepath.Join(s.cfg.RepoRoot, ".ariadne-review-"+run.ID+".md")
 	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
 		s.recordReviewOutcome(ctx, req, false, err.Error())
 		return s.fail(run, fmt.Errorf("write review prompt: %w", err))
@@ -731,7 +731,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 		s.cleanup(run)
 		return s.fail(run, fmt.Errorf("build revision prompt: %w", err))
 	}
-	taskFile := filepath.Join(worktreePath, ".conductor-task.md")
+	taskFile := filepath.Join(worktreePath, ".ariadne-task.md")
 	if err := os.WriteFile(taskFile, prompt, 0600); err != nil {
 		s.recordReviewOutcome(ctx, req, false, err.Error())
 		s.cleanup(run)
@@ -842,7 +842,7 @@ func (s *Supervisor) buildReviewPrompt(ctx context.Context, task *domain.Task) (
 	var b strings.Builder
 
 	// Load QA persona AGENTS.md if present.
-	agentsPath := filepath.Join(s.cfg.RepoRoot, ".conductor", "personas", "qa-engineer", "AGENTS.md")
+	agentsPath := filepath.Join(s.cfg.RepoRoot, ".ariadne", "personas", "qa-engineer", "AGENTS.md")
 	if data, err := os.ReadFile(agentsPath); err == nil {
 		b.WriteString(string(data))
 		b.WriteString("\n\n---\n\n")
@@ -1003,10 +1003,10 @@ func findWorktreeForBranch(porcelain, branch string) string {
 	return ""
 }
 
-// loadRebaseWorkflow reads .conductor/REBASE_WORKFLOW.md from the repo root.
+// loadRebaseWorkflow reads .ariadne/REBASE_WORKFLOW.md from the repo root.
 // Returns empty string if the file is absent.
 func (s *Supervisor) loadRebaseWorkflow() string {
-	path := filepath.Join(s.cfg.RepoRoot, ".conductor", "REBASE_WORKFLOW.md")
+	path := filepath.Join(s.cfg.RepoRoot, ".ariadne", "REBASE_WORKFLOW.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""

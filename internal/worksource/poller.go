@@ -8,7 +8,7 @@ import (
 
 	charmlog "github.com/charmbracelet/log"
 
-	"github.com/haha-systems/conductor/internal/domain"
+	"github.com/haha-systems/ariadne/internal/domain"
 )
 
 // PollerConfig controls TaskPoller behaviour.
