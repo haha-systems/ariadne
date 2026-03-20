@@ -22,5 +22,5 @@ func (a *OpenCodeAdapter) Name() string                                    { ret
 func (a *OpenCodeAdapter) Capabilities() []Capability                     { return a.shell.adapterCapabilities() }
 func (a *OpenCodeAdapter) CostEstimate(n int) (float64, bool)             { return a.shell.adapterCostEstimate(n) }
 func (a *OpenCodeAdapter) Run(ctx context.Context, rc RunContext) (RunHandle, error) {
-	return a.shell.adapterRun(ctx, rc)
+	return a.shell.adapterRun(ctx, rc, "run", "--file", rc.TaskFile)
 }
