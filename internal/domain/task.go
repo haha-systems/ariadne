@@ -34,7 +34,7 @@ const (
 	TaskTypeRevise TaskType = "revise"
 )
 
-// TaskConfig holds the optional conductor: front-matter parsed from a task description.
+// TaskConfig holds the optional ariadne: front-matter parsed from a task description.
 type TaskConfig struct {
 	Agent          string            `yaml:"agent"`
 	Persona        string            `yaml:"persona"`
@@ -74,7 +74,7 @@ type Task struct {
 // frontMatterMarker is the YAML front-matter delimiter.
 const frontMatterMarker = "---"
 
-// ParseFrontMatter extracts a conductor: YAML block from a task description.
+// ParseFrontMatter extracts a ariadne: YAML block from a task description.
 // It returns nil config and the original body if no front-matter is present.
 func ParseFrontMatter(description string) (*TaskConfig, string) {
 	description = strings.TrimSpace(description)
@@ -93,11 +93,11 @@ func ParseFrontMatter(description string) (*TaskConfig, string) {
 	body := strings.TrimSpace(rest[idx+len("\n"+frontMatterMarker):])
 
 	var wrapper struct {
-		Conductor TaskConfig `yaml:"conductor"`
+		Ariadne TaskConfig `yaml:"ariadne"`
 	}
 	if err := yaml.Unmarshal([]byte(yamlBlock), &wrapper); err != nil {
 		return nil, description
 	}
 
-	return &wrapper.Conductor, body
+	return &wrapper.Ariadne, body
 }

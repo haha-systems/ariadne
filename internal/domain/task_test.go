@@ -15,7 +15,7 @@ func TestParseFrontMatter_NoFrontMatter(t *testing.T) {
 
 func TestParseFrontMatter_WithConfig(t *testing.T) {
 	desc := `---
-conductor:
+ariadne:
   agent: claude
   timeout_minutes: 30
   env:
@@ -43,7 +43,7 @@ Implement the thing described below...`
 
 func TestParseFrontMatter_Persona(t *testing.T) {
 	desc := `---
-conductor:
+ariadne:
   persona: lead-engineer
 ---
 Build the feature`
@@ -62,7 +62,7 @@ Build the feature`
 
 func TestParseFrontMatter_RoutingStrategy(t *testing.T) {
 	desc := `---
-conductor:
+ariadne:
   routing: race 2
 ---
 Do the thing`
@@ -160,7 +160,7 @@ func TestTask_RebaseFields(t *testing.T) {
 
 func TestParseFrontMatter_MissingClosingMarker(t *testing.T) {
 	desc := `---
-conductor:
+ariadne:
   agent: claude
 No closing marker`
 

@@ -108,7 +108,7 @@ func TestNewGitHubSource_InvalidRepo(t *testing.T) {
 }
 
 func TestNewGitHubSource_ValidRepo(t *testing.T) {
-	s, err := NewGitHubSource("token", "org/repo", []string{"conductor"}, nil)
+	s, err := NewGitHubSource("token", "org/repo", []string{"ariadne"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,12 +120,12 @@ func TestNewGitHubSource_ValidRepo(t *testing.T) {
 func TestHasLabel(t *testing.T) {
 	issue := &gh.Issue{
 		Labels: []*gh.Label{
-			{Name: gh.Ptr("conductor")},
+			{Name: gh.Ptr("ariadne")},
 			{Name: gh.Ptr("bug")},
 		},
 	}
-	if !hasLabel(issue, "conductor") {
-		t.Error("expected hasLabel to return true for 'conductor'")
+	if !hasLabel(issue, "ariadne") {
+		t.Error("expected hasLabel to return true for 'ariadne'")
 	}
 	if hasLabel(issue, "enhancement") {
 		t.Error("expected hasLabel to return false for 'enhancement'")
@@ -133,11 +133,11 @@ func TestHasLabel(t *testing.T) {
 }
 
 func TestMatchesFilter(t *testing.T) {
-	s := &GitHubSource{labelFilter: []string{"conductor", "ready"}}
+	s := &GitHubSource{labelFilter: []string{"ariadne", "ready"}}
 
 	issue := &gh.Issue{
 		Labels: []*gh.Label{
-			{Name: gh.Ptr("conductor")},
+			{Name: gh.Ptr("ariadne")},
 			{Name: gh.Ptr("ready")},
 		},
 	}
@@ -147,7 +147,7 @@ func TestMatchesFilter(t *testing.T) {
 
 	issueMissing := &gh.Issue{
 		Labels: []*gh.Label{
-			{Name: gh.Ptr("conductor")},
+			{Name: gh.Ptr("ariadne")},
 		},
 	}
 	if s.matchesFilter(issueMissing) {
@@ -410,13 +410,13 @@ func TestRecordRebaseOutcome_ThirdFailure_PostsComment(t *testing.T) {
 func TestPrHasLabel(t *testing.T) {
 	pr := &gh.PullRequest{
 		Labels: []*gh.Label{
-			{Name: gh.Ptr("conductor:rebasing")},
+			{Name: gh.Ptr("ariadne:rebasing")},
 		},
 	}
-	if !prHasLabel(pr, "conductor:rebasing") {
+	if !prHasLabel(pr, "ariadne:rebasing") {
 		t.Error("expected prHasLabel to return true")
 	}
-	if prHasLabel(pr, "conductor:rebase-abandoned") {
+	if prHasLabel(pr, "ariadne:rebase-abandoned") {
 		t.Error("expected prHasLabel to return false for absent label")
 	}
 }
@@ -427,8 +427,8 @@ func TestRebaseAttempts_Parsing(t *testing.T) {
 		expected int
 	}{
 		{nil, 0},
-		{[]string{"conductor:rebase-attempts-1"}, 1},
-		{[]string{"conductor:rebase-attempts-2"}, 2},
+		{[]string{"ariadne:rebase-attempts-1"}, 1},
+		{[]string{"ariadne:rebase-attempts-2"}, 2},
 		{[]string{"other-label"}, 0},
 	}
 	for _, tc := range cases {
@@ -476,7 +476,7 @@ func TestMarkPRNeedsReview(t *testing.T) {
 		t.Errorf("expected %q label, got %v", needsReviewLabel, addedLabels)
 	}
 	for _, l := range addedLabels {
-		if strings.HasPrefix(l, "conductor:issue-") {
+		if strings.HasPrefix(l, "ariadne:issue-") {
 			t.Errorf("unexpected dynamic issue label added: %q", l)
 		}
 	}
@@ -885,11 +885,11 @@ func TestAuthorAllowed_NotAllowed(t *testing.T) {
 func TestPoll_AllowedAuthorReturned(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, []any{makeIssue(1, "alice", "conductor")})
+		writeJSON(w, []any{makeIssue(1, "alice", "ariadne")})
 	})
 
 	s := newTestGitHubSource(t, mux)
-	s.labelFilter = []string{"conductor"}
+	s.labelFilter = []string{"ariadne"}
 	s.allowedAuthors = []string{"alice"}
 
 	tasks, err := s.Poll(context.Background())
@@ -907,11 +907,11 @@ func TestPoll_AllowedAuthorReturned(t *testing.T) {
 func TestPoll_NonAllowedAuthorSkipped(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, []any{makeIssue(2, "bob", "conductor")})
+		writeJSON(w, []any{makeIssue(2, "bob", "ariadne")})
 	})
 
 	s := newTestGitHubSource(t, mux)
-	s.labelFilter = []string{"conductor"}
+	s.labelFilter = []string{"ariadne"}
 	s.allowedAuthors = []string{"alice"}
 
 	tasks, err := s.Poll(context.Background())
@@ -926,11 +926,11 @@ func TestPoll_NonAllowedAuthorSkipped(t *testing.T) {
 func TestPoll_EmptyAllowedAuthors_AllowsAll(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/org/repo/issues", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, []any{makeIssue(3, "anyone", "conductor")})
+		writeJSON(w, []any{makeIssue(3, "anyone", "ariadne")})
 	})
 
 	s := newTestGitHubSource(t, mux)
-	s.labelFilter = []string{"conductor"}
+	s.labelFilter = []string{"ariadne"}
 	// allowedAuthors is nil — all authors allowed
 
 	tasks, err := s.Poll(context.Background())
@@ -943,14 +943,14 @@ func TestPoll_EmptyAllowedAuthors_AllowsAll(t *testing.T) {
 }
 
 func TestIssueToTask_FrontMatter(t *testing.T) {
-	body := "---\nconductor:\n  agent: claude\n---\nDo the thing"
+	body := "---\nariadne:\n  agent: claude\n---\nDo the thing"
 	num := 42
 	issue := &gh.Issue{
 		Number: &num,
 		Title:  gh.Ptr("My Issue"),
 		Body:   gh.Ptr(body),
 		Labels: []*gh.Label{
-			{Name: gh.Ptr("conductor")},
+			{Name: gh.Ptr("ariadne")},
 		},
 		HTMLURL: gh.Ptr("https://github.com/org/repo/issues/42"),
 	}
