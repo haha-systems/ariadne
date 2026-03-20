@@ -108,6 +108,10 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 			s.cleanup(run)
 			return s.fail(run, fmt.Errorf("copy persona files: %w", err))
 		}
+		if err := configureGitAuthor(worktreePath, req.Persona); err != nil {
+			s.cleanup(run)
+			return s.fail(run, fmt.Errorf("configure git author: %w", err))
+		}
 	}
 
 	// 3. Write task prompt to file.
@@ -292,15 +296,35 @@ func (lw *providerLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func mergeEnv(global, perTask map[string]string) map[string]string {
-	merged := make(map[string]string, len(global)+len(perTask))
-	for k, v := range global {
-		merged[k] = v
-	}
-	for k, v := range perTask {
-		merged[k] = v
+func mergeEnv(maps ...map[string]string) map[string]string {
+	merged := make(map[string]string)
+	for _, m := range maps {
+		for k, v := range m {
+			merged[k] = v
+		}
 	}
 	return merged
+}
+
+// configureGitAuthor sets git user.name and user.email in the worktree so
+// commits are attributed to the persona. Falls back to persona.Name when
+// DisplayName is empty. No-ops when persona is nil.
+func configureGitAuthor(worktreePath string, persona *config.PersonaConfig) error {
+	if persona == nil {
+		return nil
+	}
+	name := persona.DisplayName
+	if name == "" {
+		name = persona.Name
+	}
+	for _, kv := range [][2]string{{"user.name", name}, {"user.email", persona.Email}} {
+		cmd := exec.Command("git", "config", kv[0], kv[1])
+		cmd.Dir = worktreePath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git config %s: %w: %s", kv[0], err, out)
+		}
+	}
+	return nil
 }
 
 func taskEnv(task *domain.Task) map[string]string {
@@ -693,6 +717,11 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	if err := s.createRebaseBranchWorktree(worktreePath, req.Task.Branch); err != nil {
 		s.recordReviewOutcome(ctx, req, false, err.Error())
 		return s.fail(run, fmt.Errorf("create revise worktree: %w", err))
+	}
+	if err := configureGitAuthor(worktreePath, req.Persona); err != nil {
+		s.recordReviewOutcome(ctx, req, false, err.Error())
+		s.cleanup(run)
+		return s.fail(run, fmt.Errorf("configure git author: %w", err))
 	}
 
 	// Build revision prompt.
