@@ -18,6 +18,7 @@ import (
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
 	"github.com/haha-systems/ariadne/internal/provider"
+	"github.com/haha-systems/ariadne/internal/runstate"
 )
 
 // TokenSource is satisfied by any WorkSource that can supply a GitHub API token.
@@ -68,6 +69,7 @@ type Config struct {
 	TimeoutMinutes    int
 	PreserveOnFailure bool
 	RepoRoot          string
+	RunState          *runstate.Store
 	// WorkflowFile is the path (relative to RepoRoot) of the workflow markdown
 	// to prepend to every task prompt. Silently skipped if the file is absent.
 	WorkflowFile string
@@ -101,6 +103,28 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 
 	worktreePath := filepath.Join(s.cfg.RepoRoot, s.cfg.WorktreeBaseDir, run.ID)
 	run.WorktreePath = worktreePath
+
+	personaName := ""
+	if req.Persona != nil {
+		personaName = req.Persona.Name
+	}
+	s.recordRun(runstate.Record{
+		ID:           run.ID,
+		TaskID:       req.Task.ID,
+		TaskTitle:    req.Task.Title,
+		TaskType:     req.Task.Type,
+		TaskSource:   req.Task.Source,
+		SourceURL:    req.Task.SourceURL,
+		Provider:     req.Provider.Name(),
+		Persona:      personaName,
+		Status:       domain.RunStatusRunning,
+		WorktreePath: worktreePath,
+		StartedAt:    now.UTC(),
+		LastEvent:    "initializing",
+		Metadata: map[string]string{
+			"task_branch": req.Task.Branch,
+		},
+	})
 
 	charmlog.Info("run starting", "run_id", run.ID, "task_id", run.TaskID, "type", "issue", "provider", req.Provider.Name())
 
@@ -145,6 +169,11 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	defer logFile.Close()
 
 	logWriter := newProviderLogWriter(logFile, run.ID)
+	s.updateRun(run.ID, func(r *runstate.Record) error {
+		r.LogPath = logPath
+		r.LastEvent = "log_opened"
+		return nil
+	})
 
 	// 5. Apply timeout.
 	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
@@ -176,6 +205,10 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 		"provider": req.Provider.Name(),
 		"task_id":  run.TaskID,
 	})
+	s.updateRun(run.ID, func(r *runstate.Record) error {
+		r.LastEvent = "run_started"
+		return nil
+	})
 
 	handle, err := req.Provider.Run(runCtx, rc)
 	if err != nil {
@@ -183,6 +216,10 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 		return s.fail(run, fmt.Errorf("launch provider: %w", err))
 	}
 	charmlog.Info("agent launched", "run_id", run.ID, "provider", req.Provider.Name())
+	s.updateRun(run.ID, func(r *runstate.Record) error {
+		r.LastEvent = "agent_launched"
+		return nil
+	})
 
 	// 8. Wait for completion.
 	// exec.CommandContext kills the process when runCtx expires, so Wait() will
@@ -199,6 +236,15 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	if runCtx.Err() == context.DeadlineExceeded {
 		run.Status = domain.RunStatusTimeout
 		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		s.updateRun(run.ID, func(r *runstate.Record) error {
+			r.Status = domain.RunStatusTimeout
+			r.LastEvent = "run_timeout"
+			r.LastError = fmt.Sprintf("run timed out after %d minutes", s.cfg.TimeoutMinutes)
+			finishedUTC := finished.UTC()
+			r.FinishedAt = &finishedUTC
+			r.DurationSeconds = finished.Sub(run.StartedAt).Seconds()
+			return nil
+		})
 		charmlog.Warn("run timed out", "run_id", run.ID, "task_id", run.TaskID, "timeout", fmt.Sprintf("%dm", s.cfg.TimeoutMinutes))
 		if !s.cfg.PreserveOnFailure {
 			s.cleanup(run)
@@ -210,6 +256,15 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 		run.Status = domain.RunStatusFailed
 		run.ErrorMsg = waitErr.Error()
 		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		s.updateRun(run.ID, func(r *runstate.Record) error {
+			r.Status = domain.RunStatusFailed
+			r.LastEvent = "run_failed"
+			r.LastError = waitErr.Error()
+			finishedUTC := finished.UTC()
+			r.FinishedAt = &finishedUTC
+			r.DurationSeconds = finished.Sub(run.StartedAt).Seconds()
+			return nil
+		})
 		charmlog.Error("run failed", "run_id", run.ID, "task_id", run.TaskID, "error", waitErr)
 		if !s.cfg.PreserveOnFailure {
 			s.cleanup(run)
@@ -219,6 +274,15 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 
 	run.Status = domain.RunStatusSucceeded
 	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	s.updateRun(run.ID, func(r *runstate.Record) error {
+		r.Status = domain.RunStatusSucceeded
+		r.LastEvent = "run_succeeded"
+		r.LastError = ""
+		finishedUTC := finished.UTC()
+		r.FinishedAt = &finishedUTC
+		r.DurationSeconds = finished.Sub(run.StartedAt).Seconds()
+		return nil
+	})
 	charmlog.Info("run succeeded", "run_id", run.ID, "task_id", run.TaskID, "duration", duration)
 
 	return &Result{Run: run}
@@ -258,7 +322,36 @@ func (s *Supervisor) fail(run *domain.Run, err error) *Result {
 	run.Status = domain.RunStatusFailed
 	run.FinishedAt = &t
 	run.ErrorMsg = err.Error()
+	s.updateRun(run.ID, func(r *runstate.Record) error {
+		r.Status = domain.RunStatusFailed
+		r.LastEvent = "run_failed"
+		r.LastError = err.Error()
+		finishedUTC := t.UTC()
+		r.FinishedAt = &finishedUTC
+		if !run.StartedAt.IsZero() {
+			r.DurationSeconds = t.Sub(run.StartedAt).Seconds()
+		}
+		return nil
+	})
 	return &Result{Run: run, Err: err}
+}
+
+func (s *Supervisor) recordRun(record runstate.Record) {
+	if s.cfg.RunState == nil {
+		return
+	}
+	if err := s.cfg.RunState.Upsert(record); err != nil {
+		charmlog.Warn("runstate upsert failed", "run_id", record.ID, "error", err)
+	}
+}
+
+func (s *Supervisor) updateRun(runID string, mutate func(*runstate.Record) error) {
+	if s.cfg.RunState == nil {
+		return
+	}
+	if err := s.cfg.RunState.Update(runID, mutate); err != nil {
+		charmlog.Warn("runstate update failed", "run_id", runID, "error", err)
+	}
 }
 
 // logEvent writes a structured JSON log line to the run log file.
@@ -1073,8 +1166,8 @@ func writeMCPConfig(ctx context.Context, ts TokenSource) (path string, cleanup f
 	config := map[string]map[string]mcpServer{
 		"mcpServers": {
 			"github": {
-				Type: "http",
-				URL:  "https://api.githubcopilot.com/mcp",
+				Type:    "http",
+				URL:     "https://api.githubcopilot.com/mcp",
 				Headers: map[string]string{"Authorization": "Bearer " + token},
 			},
 		},

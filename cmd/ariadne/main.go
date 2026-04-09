@@ -12,6 +12,7 @@ import (
 	"time"
 
 	charmlog "github.com/charmbracelet/log"
+	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 
 	"github.com/haha-systems/ariadne/internal/config"
@@ -19,6 +20,7 @@ import (
 	"github.com/haha-systems/ariadne/internal/proof"
 	"github.com/haha-systems/ariadne/internal/provider"
 	"github.com/haha-systems/ariadne/internal/router"
+	"github.com/haha-systems/ariadne/internal/runstate"
 	"github.com/haha-systems/ariadne/internal/supervisor"
 	"github.com/haha-systems/ariadne/internal/worksource"
 )
@@ -45,6 +47,9 @@ func rootCmd() *cobra.Command {
 		collectProofCmd(&cfgPath),
 		landCmd(&cfgPath),
 		costCmd(&cfgPath),
+		runsCmd(&cfgPath),
+		inspectRunCmd(&cfgPath),
+		monitorCmd(&cfgPath),
 	)
 	return root
 }
@@ -57,6 +62,8 @@ func runCmd(cfgPath *string) *cobra.Command {
 		Use:   "run",
 		Short: "Start polling for tasks and running agents",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = godotenv.Load()
+
 			charmlog.SetTimeFormat("15:04:05")
 			charmlog.SetReportCaller(false)
 			if verbose {
@@ -88,6 +95,7 @@ func collectProofCmd(cfgPath *string) *cobra.Command {
 		Use:   "collect-proof",
 		Short: "Collect proof artifacts for a completed run",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = godotenv.Load()
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
 				return err
@@ -117,6 +125,7 @@ func landCmd(cfgPath *string) *cobra.Command {
 		Use:   "land",
 		Short: "Rebase, re-run CI, and merge a reviewed run",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = godotenv.Load()
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
 				return err
@@ -126,6 +135,7 @@ func landCmd(cfgPath *string) *cobra.Command {
 			lander := proof.NewLander(proof.Config{
 				RequireCIPass: true,
 				PRBaseBranch:  cfg.Proof.PRBaseBranch,
+				Env:           cfg.Sandbox.Env,
 			})
 
 			sha, err := lander.Land(cmd.Context(), worktreePath)
@@ -147,6 +157,7 @@ func costCmd(cfgPath *string) *cobra.Command {
 		Use:   "cost",
 		Short: "Show cost summary for completed runs",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_ = godotenv.Load()
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
 				return err
@@ -222,17 +233,24 @@ func startOrchestrator(ctx context.Context, cfg *config.Config) error {
 		cfg.Ariadne.DefaultProvider,
 	)
 
+	stateStore := runStateStore(cfg)
+	globalEnv := mapsClone(cfg.Sandbox.Env)
+	globalEnv[runStatePathEnv] = stateStore.Path()
+
 	sup := supervisor.New(supervisor.Config{
 		WorktreeBaseDir:   cfg.Sandbox.WorktreeDir,
 		TimeoutMinutes:    cfg.Sandbox.TimeoutMinutes,
 		PreserveOnFailure: cfg.Sandbox.PreserveOnFailure,
 		RepoRoot:          repoRoot(),
+		RunState:          stateStore,
 		WorkflowFile:      cfg.Sandbox.WorkflowFile,
 	})
 
 	proofCollector := proof.New(proof.Config{
-		RequireCIPass: cfg.Proof.RequireCIPass,
-		PRBaseBranch:  cfg.Proof.PRBaseBranch,
+		RequireCIPass:     cfg.Proof.RequireCIPass,
+		RequirePRForIssue: true,
+		PRBaseBranch:      cfg.Proof.PRBaseBranch,
+		Env:               cfg.Sandbox.Env,
 	})
 
 	poller := worksource.NewPoller(source, worksource.PollerConfig{
@@ -245,7 +263,7 @@ func startOrchestrator(ctx context.Context, cfg *config.Config) error {
 	for task := range taskCh {
 		go func() {
 			defer poller.Done()
-			executeTask(ctx, task, rt, sup, proofCollector, source, cfg.Hooks)
+			executeTask(ctx, task, rt, sup, proofCollector, source, cfg.Hooks, globalEnv)
 		}()
 	}
 
@@ -261,6 +279,7 @@ func executeTask(
 	collector *proof.Collector,
 	source worksource.WorkSource,
 	hooks []string,
+	globalEnv map[string]string,
 ) {
 	log := charmlog.With("task_id", task.ID)
 
@@ -276,7 +295,7 @@ func executeTask(
 			providerNames[i] = p.Name()
 		}
 		log.Info("race started", "title", task.Title, "runners", route.RaceN, "providers", strings.Join(providerNames, ","))
-		executeRace(ctx, task, route, sup, collector, source, hooks, log)
+		executeRace(ctx, task, route, sup, collector, source, hooks, log, globalEnv)
 		return
 	}
 
@@ -286,7 +305,7 @@ func executeTask(
 		personaName = route.Persona.Name
 	}
 	log.Info("task routed", "title", task.Title, "type", task.Type, "provider", p.Name(), "persona", personaName)
-	executeRun(ctx, task, p, route.Persona, sup, collector, source, hooks, log)
+	executeRun(ctx, task, p, route.Persona, sup, collector, source, hooks, log, globalEnv)
 }
 
 // executeRace spawns N parallel runs and takes the first success.
@@ -299,6 +318,7 @@ func executeRace(
 	source worksource.WorkSource,
 	hooks []string,
 	log *charmlog.Logger,
+	globalEnv map[string]string,
 ) {
 	type outcome struct {
 		result *supervisor.Result
@@ -318,6 +338,7 @@ func executeRace(
 				Run:          run,
 				Task:         task,
 				Provider:     p,
+				GlobalEnv:    globalEnv,
 				Persona:      route.Persona,
 				Source:       source,
 				ReviewSource: source,
@@ -349,7 +370,9 @@ func executeRace(
 	}
 
 	log.Info("race winner", "provider", winnerProvider.Name(), "run_id", winner.Run.ID, "failures", failures)
-	finishRun(ctx, winner.Run, task, winnerProvider, collector, source, hooks, log)
+	if err := finishRun(ctx, winner.Run, task, winnerProvider, collector, source, hooks, log, globalEnv); err != nil {
+		handleRunFailure(ctx, task, err, source, log, winner.Run.ID)
+	}
 }
 
 func executeRun(
@@ -362,27 +385,21 @@ func executeRun(
 	source worksource.WorkSource,
 	hooks []string,
 	log *charmlog.Logger,
+	globalEnv map[string]string,
 ) {
 	run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
 	result := sup.Execute(ctx, supervisor.RunRequest{
 		Run:          run,
 		Task:         task,
 		Provider:     p,
+		GlobalEnv:    globalEnv,
 		Persona:      persona,
 		Source:       source,
 		ReviewSource: source,
 		TokenSource:  tokenSource(source),
 	})
 	if result.Err != nil {
-		log.Error("run failed", "run_id", run.ID, "error", result.Err)
-		switch task.Type {
-		case domain.TaskTypeReview, domain.TaskTypeRevise:
-			source.RecordReviewOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
-		case domain.TaskTypeRebase:
-			source.RecordRebaseOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
-		default:
-			source.PostResult(ctx, task, fmt.Sprintf("Run failed: %v", result.Err)) //nolint:errcheck
-		}
+		handleRunFailure(ctx, task, result.Err, source, log, run.ID)
 		return
 	}
 	switch task.Type {
@@ -391,7 +408,9 @@ func executeRun(
 	case domain.TaskTypeRebase:
 		return // outcome already recorded by supervisor via RecordRebaseOutcome
 	}
-	finishRun(ctx, run, task, p, collector, source, hooks, log)
+	if err := finishRun(ctx, run, task, p, collector, source, hooks, log, globalEnv); err != nil {
+		handleRunFailure(ctx, task, err, source, log, run.ID)
+	}
 }
 
 func finishRun(
@@ -403,18 +422,53 @@ func finishRun(
 	source worksource.WorkSource,
 	hooks []string,
 	log *charmlog.Logger,
-) {
+	globalEnv map[string]string,
+) error {
 	log.Info("run succeeded", "run_id", run.ID)
 
-	bundle, err := collector.Collect(ctx, run, task, p, source)
+	// Use per-task env if available.
+	var taskEnv map[string]string
+	if task.Config != nil {
+		taskEnv = task.Config.Env
+	}
+
+	bundle, err := collector.Collect(ctx, run, task, taskEnv, p, source)
 	if err != nil {
-		log.Error("proof collection failed", "run_id", run.ID, "error", err)
-		source.PostResult(ctx, task, fmt.Sprintf("Run succeeded but proof collection failed: %v", err)) //nolint:errcheck
-		return
+		if state := runStateStoreFromGlobal(globalEnv); state != nil {
+			if updateErr := state.Update(run.ID, func(r *runstate.Record) error {
+				r.Status = domain.RunStatusFailed
+				r.LastEvent = "proof_failed"
+				r.LastError = err.Error()
+				return nil
+			}); updateErr != nil {
+				charmlog.Warn("runstate proof failure update failed", "run_id", run.ID, "error", updateErr)
+			}
+		}
+		return fmt.Errorf("proof collection failed: %w", err)
+	}
+	if state := runStateStoreFromGlobal(globalEnv); state != nil {
+		if err := state.Update(run.ID, func(r *runstate.Record) error {
+			r.ProofPath = filepath.Join(run.WorktreePath, "proof", "summary.json")
+			r.PRURL = bundle.PRUrl
+			r.Walkthrough = bundle.Walkthrough
+			r.LastEvent = "proof_collected"
+			return nil
+		}); err != nil {
+			charmlog.Warn("runstate proof update failed", "run_id", run.ID, "error", err)
+		}
 	}
 
 	if err := source.PostResult(ctx, task, formatProofSummary(bundle)); err != nil {
 		log.Error("post result failed", "error", err)
+		if state := runStateStoreFromGlobal(globalEnv); state != nil {
+			if updateErr := state.Update(run.ID, func(r *runstate.Record) error {
+				r.LastEvent = "post_result_failed"
+				r.LastError = err.Error()
+				return nil
+			}); updateErr != nil {
+				charmlog.Warn("runstate post result failure update failed", "run_id", run.ID, "error", updateErr)
+			}
+		}
 	}
 
 	// Run post-run hooks with the summary path.
@@ -426,6 +480,64 @@ func finishRun(
 	}
 
 	log.Info("run complete — worktree preserved", "run_id", run.ID, "path", run.WorktreePath)
+	if state := runStateStoreFromGlobal(globalEnv); state != nil {
+		if err := state.Update(run.ID, func(r *runstate.Record) error {
+			r.LastEvent = "run_complete"
+			return nil
+		}); err != nil {
+			charmlog.Warn("runstate completion update failed", "run_id", run.ID, "error", err)
+		}
+	}
+	return nil
+}
+
+const runStatePathEnv = "ARIADNE_RUN_STATE_PATH"
+
+func runStateStore(cfg *config.Config) *runstate.Store {
+	return runstate.New(filepath.Join(repoRoot(), cfg.Sandbox.WorktreeDir, "index.json"))
+}
+
+func runStateStoreFromGlobal(env map[string]string) *runstate.Store {
+	if env == nil {
+		return nil
+	}
+	path := env[runStatePathEnv]
+	if path == "" {
+		return nil
+	}
+	return runstate.New(path)
+}
+
+func mapsClone(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return map[string]string{}
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+type issueFailureRecorder interface {
+	RecordIssueFailure(ctx context.Context, task *domain.Task, reason string) error
+}
+
+func handleRunFailure(ctx context.Context, task *domain.Task, err error, source worksource.WorkSource, log *charmlog.Logger, runID string) {
+	log.Error("run failed", "run_id", runID, "error", err)
+	switch task.Type {
+	case domain.TaskTypeReview, domain.TaskTypeRevise:
+		source.RecordReviewOutcome(ctx, task, false, err.Error()) //nolint:errcheck
+	case domain.TaskTypeRebase:
+		source.RecordRebaseOutcome(ctx, task, false, err.Error()) //nolint:errcheck
+	default:
+		if recorder, ok := source.(issueFailureRecorder); ok {
+			if recordErr := recorder.RecordIssueFailure(ctx, task, err.Error()); recordErr != nil {
+				log.Warn("record issue failure failed", "run_id", runID, "error", recordErr)
+			}
+		}
+		source.PostResult(ctx, task, fmt.Sprintf("Run failed: %v", err)) //nolint:errcheck
+	}
 }
 
 func formatProofSummary(b *domain.ProofBundle) string {
@@ -474,7 +586,7 @@ func buildWorkSource(cfg *config.Config) (worksource.WorkSource, error) {
 		if token == "" {
 			return nil, fmt.Errorf("LINEAR_API_KEY env var required for Linear work source")
 		}
-		return worksource.NewLinearSource(token, cfg.WorkSources.Linear.TeamID, cfg.WorkSources.Linear.StateFilter)
+		return worksource.NewLinearSource(token, cfg.WorkSources.Linear.TeamID, cfg.WorkSources.Linear.Project, cfg.WorkSources.Linear.StateFilter)
 	}
 	return nil, fmt.Errorf("no work source configured — add [work_sources.github] or [work_sources.linear] to ariadne.toml")
 }
