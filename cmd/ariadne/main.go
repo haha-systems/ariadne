@@ -50,6 +50,7 @@ func rootCmd() *cobra.Command {
 		runsCmd(&cfgPath),
 		inspectRunCmd(&cfgPath),
 		monitorCmd(&cfgPath),
+		mcpCmd(&cfgPath),
 	)
 	return root
 }
