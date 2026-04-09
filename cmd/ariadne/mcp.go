@@ -11,6 +11,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/mcpserver"
+	"github.com/haha-systems/ariadne/internal/operator"
 )
 
 func mcpCmd(cfgPath *string) *cobra.Command {
@@ -32,12 +33,18 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
+			operatorSvc, err := operator.New(cfg, repoRoot())
+			if err != nil {
+				return err
+			}
+
 			server := mcpserver.New(mcpserver.Config{
 				RepoRoot:      repoRoot(),
 				WorktreeDir:   cfg.Sandbox.WorktreeDir,
 				RunStatePath:  runStateStore(cfg).Path(),
 				ListenAddress: listenAddr,
 				MCPPath:       mcpPath,
+				Operator:      operatorSvc,
 			}, mcpserver.Options{})
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Ariadne MCP listening on http://%s%s\n", listenAddr, normalizeMCPPath(mcpPath))

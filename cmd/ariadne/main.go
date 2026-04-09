@@ -51,6 +51,7 @@ func rootCmd() *cobra.Command {
 		inspectRunCmd(&cfgPath),
 		monitorCmd(&cfgPath),
 		mcpCmd(&cfgPath),
+		remoteCmd(),
 	)
 	return root
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/operator"
 	"github.com/haha-systems/ariadne/internal/runstate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	RunStatePath  string
 	ListenAddress string
 	MCPPath       string
+	Operator      *operator.Service
 }
 
 type Options struct {
@@ -76,6 +78,15 @@ type refreshToolOutput struct {
 	Updated int `json:"updated"`
 	Skipped int `json:"skipped"`
 }
+
+type startRunToolInput = operator.StartRunInput
+type startRunToolOutput = operator.StartRunOutput
+
+type cancelRunToolInput struct {
+	RunID string `json:"run_id" jsonschema:"run identifier to cancel"`
+}
+
+type cancelRunToolOutput = operator.CancelRunOutput
 
 func New(cfg Config, opts Options) *Server {
 	logOutput := opts.LogOutput
@@ -138,6 +149,14 @@ func (s *Server) Handler() http.Handler {
 		Name:        "refresh_run_index",
 		Description: "Scan Ariadne worktree directories and refresh the shared run index from run.jsonl and proof artifacts.",
 	}, s.refreshRunIndex)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "start_run",
+		Description: "Start a new manual Ariadne run from a title and description, using the configured routing or an explicitly pinned provider/persona.",
+	}, s.startRun)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "cancel_run",
+		Description: "Request cancellation for a currently active Ariadne run started by this MCP server process.",
+	}, s.cancelRun)
 
 	baseHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
@@ -191,10 +210,11 @@ func (s *Server) readOverview(ctx context.Context, req *mcp.ReadResourceRequest)
 			"ariadne://runs/{run_id}",
 			"ariadne://runs/{run_id}/logs",
 		},
-		SupportedTools: []string{"refresh_run_index"},
+		SupportedTools: []string{"refresh_run_index", "start_run", "cancel_run"},
 		Notes: []string{
 			"Run inspection is backed by the shared run-state index written by Ariadne.",
 			"refresh_run_index can backfill records from existing worktrees when the index is stale or absent.",
+			"start_run and cancel_run operate on manual runs managed by this MCP server process.",
 		},
 	}
 	return jsonResource(req.Params.URI, payload)
@@ -259,6 +279,28 @@ func (s *Server) refreshRunIndex(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 	output := refreshToolOutput{Scanned: scanned, Updated: updated, Skipped: skipped}
 	return toolResult(fmt.Sprintf("scanned %d worktrees, updated %d records", scanned, updated), false), output, nil
+}
+
+func (s *Server) startRun(ctx context.Context, req *mcp.CallToolRequest, input startRunToolInput) (*mcp.CallToolResult, startRunToolOutput, error) {
+	if s.cfg.Operator == nil {
+		return nil, startRunToolOutput{}, fmt.Errorf("operator service is not configured")
+	}
+	output, err := s.cfg.Operator.StartRun(ctx, operator.StartRunInput(input))
+	if err != nil {
+		return nil, startRunToolOutput{}, err
+	}
+	return toolResult("manual run started", false), startRunToolOutput(*output), nil
+}
+
+func (s *Server) cancelRun(ctx context.Context, req *mcp.CallToolRequest, input cancelRunToolInput) (*mcp.CallToolResult, cancelRunToolOutput, error) {
+	if s.cfg.Operator == nil {
+		return nil, cancelRunToolOutput{}, fmt.Errorf("operator service is not configured")
+	}
+	output, err := s.cfg.Operator.CancelRun(strings.TrimSpace(input.RunID))
+	if err != nil {
+		return nil, cancelRunToolOutput{}, err
+	}
+	return toolResult("cancel request recorded", false), cancelRunToolOutput(*output), nil
 }
 
 func (s *Server) scanWorktrees(limit int) (int, int, int, error) {
