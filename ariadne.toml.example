@@ -35,9 +35,15 @@ strategy = "round-robin"
 [proof]
 require_ci_pass = true
 pr_base_branch = "main"
+publish_mode = "required" # required | allowed | skip
+# ci_command = ["bash", "-lc", "go test ./..."] # optional explicit validation command
 
 [sandbox]
 worktree_dir = ".ariadne/runs"
 timeout_minutes = 45
 preserve_on_failure = true
 workflow_file = ".ariadne/WORKFLOW.md"
+
+# Global environment variables for agent runs and CI.
+# [sandbox.env]
+# DATABASE_URL = "postgres://localhost:5432/test"

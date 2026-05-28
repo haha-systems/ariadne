@@ -23,6 +23,7 @@ type Router struct {
 	personas      map[string]config.PersonaConfig
 	strategy      string
 	defaultName   string
+	routerFile    string
 	roundRobinIdx atomic.Uint64
 }
 
@@ -42,6 +43,7 @@ func New(
 	labelRoutes map[string]string,
 	strategy string,
 	defaultName string,
+	routerFile string,
 ) *Router {
 	return &Router{
 		providers:     providers,
@@ -50,6 +52,7 @@ func New(
 		personas:      map[string]config.PersonaConfig{},
 		strategy:      strategy,
 		defaultName:   defaultName,
+		routerFile:    routerFile,
 	}
 }
 
@@ -61,6 +64,7 @@ func NewWithPersonas(
 	personas map[string]config.PersonaConfig,
 	strategy string,
 	defaultName string,
+	routerFile string,
 ) *Router {
 	if personaRoutes == nil {
 		personaRoutes = map[string]string{}
@@ -75,6 +79,7 @@ func NewWithPersonas(
 		personas:      personas,
 		strategy:      strategy,
 		defaultName:   defaultName,
+		routerFile:    routerFile,
 	}
 }
 
@@ -82,10 +87,11 @@ func NewWithPersonas(
 // Precedence (highest → lowest):
 //  1. Pinned agent (front-matter agent:) → provider directly, no persona
 //  2. Pinned persona (front-matter persona:) → persona's provider (or default)
-//  3. Label-based persona route (persona_routes) → persona's provider
-//  4. Label-based provider route (label_routes) → provider directly
-//  5. Global strategy → provider
-//  6. Default provider
+//  3. Starlark router script (if configured and file exists)
+//  4. Label-based persona route (persona_routes) → persona's provider
+//  5. Label-based provider route (label_routes) → provider directly
+//  6. Global strategy → provider
+//  7. Default provider
 func (r *Router) Route(task *domain.Task) (RouteResult, error) {
 	// 1. Pinned via front-matter agent field — no persona.
 	if task.Config != nil && task.Config.Agent != "" {
@@ -98,31 +104,63 @@ func (r *Router) Route(task *domain.Task) (RouteResult, error) {
 		return result, nil
 	}
 
-	// 2. Routing strategy from front-matter overrides global config.
+	// 2. Pinned persona (front-matter persona:)
+	if task.Config != nil && task.Config.Persona != "" {
+		name := task.Config.Persona
+		if p, ok := r.personas[name]; ok {
+			providerName := p.Provider
+			if providerName == "" {
+				providerName = r.defaultName
+			}
+			agent, err := r.get(providerName)
+			if err != nil {
+				return RouteResult{}, err
+			}
+			result := RouteResult{Providers: []provider.AgentProvider{agent}, RaceN: 1, Persona: &p}
+			charmlog.Debug("route resolved", "task_id", task.ID, "persona", p.Name, "provider", agent.Name(), "strategy", "pinned_persona")
+			return result, nil
+		}
+		charmlog.Warn("unknown persona in task front-matter, falling through", "persona", name)
+	}
+
+	// Resolve strategy (global default or task override).
 	strategy := r.strategy
 	if task.Config != nil && task.Config.Routing != "" {
 		strategy = task.Config.Routing
 	}
 
-	// Resolve persona (steps 2–3).
-	persona := r.resolvePersona(task)
-
-	if persona != nil {
-		// Use the persona's provider if set, otherwise fall back to default.
-		providerName := persona.Provider
-		if providerName == "" {
-			providerName = r.defaultName
-		}
-		p, err := r.get(providerName)
+	// 3. Starlark router script.
+	if r.routerFile != "" {
+		res, ok, err := r.routeWithStarlark(r.routerFile, task)
 		if err != nil {
-			return RouteResult{}, err
+			charmlog.Error("starlark routing failed, falling back", "error", err)
+		} else if ok {
+			charmlog.Debug("route resolved via starlark", "task_id", task.ID, "path", r.routerFile)
+			return res, nil
 		}
-		result := RouteResult{Providers: []provider.AgentProvider{p}, RaceN: 1, Persona: persona}
-		charmlog.Debug("route resolved", "task_id", task.ID, "labels", strings.Join(task.Labels, ","), "persona", persona.Name, "provider", p.Name(), "strategy", "persona_route")
-		return result, nil
 	}
 
-	// 4. Label-based routing (checked before strategy).
+	// 4. Label-based persona route — first match wins.
+	for _, label := range task.Labels {
+		if personaName, ok := r.personaRoutes[label]; ok {
+			if p, ok := r.personas[personaName]; ok {
+				providerName := p.Provider
+				if providerName == "" {
+					providerName = r.defaultName
+				}
+				agent, err := r.get(providerName)
+				if err != nil {
+					return RouteResult{}, err
+				}
+				result := RouteResult{Providers: []provider.AgentProvider{agent}, RaceN: 1, Persona: &p}
+				charmlog.Debug("route resolved", "task_id", task.ID, "labels", strings.Join(task.Labels, ","), "persona", p.Name, "provider", agent.Name(), "strategy", "persona_route")
+				return result, nil
+			}
+			charmlog.Warn("persona_routes references unknown persona, falling through", "persona", personaName, "label", label)
+		}
+	}
+
+	// 5. Label-based routing (checked before strategy).
 	for _, label := range task.Labels {
 		if providerName, ok := r.labelRoutes[label]; ok {
 			p, err := r.get(providerName)

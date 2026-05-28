@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,11 +10,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/gateway"
+	"github.com/haha-systems/ariadne/internal/memory"
 	"github.com/haha-systems/ariadne/internal/operator"
 	"github.com/haha-systems/ariadne/internal/runstate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,15 +27,19 @@ import (
 const (
 	resourceOverview = "ariadne://overview"
 	resourceRuns     = "ariadne://runs"
+	resourceMemory   = "ariadne://memory"
 )
 
 type Config struct {
-	RepoRoot      string
-	WorktreeDir   string
-	RunStatePath  string
-	ListenAddress string
-	MCPPath       string
-	Operator      *operator.Service
+	RepoRoot        string
+	WorktreeDir     string
+	RunStatePath    string
+	MemoryStorePath string
+	Skills          map[string]config.SkillConfig
+	ListenAddress   string
+	MCPPath         string
+	Operator        *operator.Service // legacy for transition
+	Gateway         gateway.Gateway // preferred new path for direct runs (MCP as adapter)
 }
 
 type Options struct {
@@ -39,12 +48,13 @@ type Options struct {
 }
 
 type Server struct {
-	cfg     Config
-	logger  *slog.Logger
-	now     func() time.Time
-	store   *runstate.Store
-	baseURL string
-	mcpPath string
+	cfg         Config
+	logger      *slog.Logger
+	now         func() time.Time
+	store       *runstate.Store
+	memoryStore *memory.Store
+	baseURL     string
+	mcpPath     string
 }
 
 type overview struct {
@@ -53,6 +63,7 @@ type overview struct {
 	RepoRoot           string   `json:"repo_root"`
 	WorktreeDir        string   `json:"worktree_dir"`
 	RunStatePath       string   `json:"run_state_path"`
+	MemoryStorePath    string   `json:"memory_store_path"`
 	SupportedResources []string `json:"supported_resources"`
 	SupportedTools     []string `json:"supported_tools"`
 	Notes              []string `json:"notes"`
@@ -88,6 +99,31 @@ type cancelRunToolInput struct {
 
 type cancelRunToolOutput = operator.CancelRunOutput
 
+type rememberToolInput struct {
+	Key   string `json:"key" jsonschema:"unique identifier for the memory"`
+	Value string `json:"value" jsonschema:"content to remember"`
+	RunID string `json:"run_id,omitempty" jsonschema:"optional run identifier associated with this memory"`
+}
+
+type recallToolInput struct {
+	Key string `json:"key" jsonschema:"identifier of the memory to recall"`
+}
+
+type forgetToolInput struct {
+	Key string `json:"key" jsonschema:"identifier of the memory to forget"`
+}
+
+type runSkillToolInput struct {
+	SkillName string `json:"skill_name" jsonschema:"name of the skill to execute"`
+	Args      string `json:"args,omitempty" jsonschema:"optional arguments to pass to the skill command"`
+}
+
+type runSkillToolOutput struct {
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+	Exit   int    `json:"exit"`
+}
+
 func New(cfg Config, opts Options) *Server {
 	logOutput := opts.LogOutput
 	if logOutput == nil {
@@ -99,12 +135,13 @@ func New(cfg Config, opts Options) *Server {
 	}
 	mcpPath := normalizePath(cfg.MCPPath)
 	return &Server{
-		cfg:     cfg,
-		logger:  slog.New(slog.NewTextHandler(logOutput, nil)),
-		now:     now,
-		store:   runstate.New(cfg.RunStatePath),
-		baseURL: "http://" + cfg.ListenAddress + mcpPath,
-		mcpPath: mcpPath,
+		cfg:         cfg,
+		logger:      slog.New(slog.NewTextHandler(logOutput, nil)),
+		now:         now,
+		store:       runstate.New(cfg.RunStatePath),
+		memoryStore: memory.New(cfg.MemoryStorePath),
+		baseURL:     "http://" + cfg.ListenAddress + mcpPath,
+		mcpPath:     mcpPath,
 	}
 }
 
@@ -130,6 +167,13 @@ func (s *Server) Handler() http.Handler {
 		MIMEType:    "application/json",
 		URI:         resourceRuns,
 	}, s.readRuns)
+
+	server.AddResource(&mcp.Resource{
+		Name:        "memory",
+		Description: "Harness-wide persistent memory entries.",
+		MIMEType:    "application/json",
+		URI:         resourceMemory,
+	}, s.readMemory)
 
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
 		Name:        "run-detail",
@@ -157,6 +201,23 @@ func (s *Server) Handler() http.Handler {
 		Name:        "cancel_run",
 		Description: "Request cancellation for a currently active Ariadne run started by this MCP server process.",
 	}, s.cancelRun)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ariadne_remember",
+		Description: "Store a piece of knowledge in the harness-wide persistent memory.",
+	}, s.remember)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ariadne_recall",
+		Description: "Retrieve a piece of knowledge from the harness-wide persistent memory by its key.",
+	}, s.recall)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ariadne_forget",
+		Description: "Delete a piece of knowledge from the harness-wide persistent memory.",
+	}, s.forget)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ariadne_run_skill",
+		Description: "Execute a pre-configured Ariadne skill command.",
+	}, s.runSkill)
 
 	baseHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
@@ -199,22 +260,27 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 func (s *Server) readOverview(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	payload := overview{
-		Service:      "ariadne-mcp",
-		BaseURL:      s.baseURL,
-		RepoRoot:     s.cfg.RepoRoot,
-		WorktreeDir:  filepath.Join(s.cfg.RepoRoot, s.cfg.WorktreeDir),
-		RunStatePath: s.cfg.RunStatePath,
+		Service:         "ariadne-mcp",
+		BaseURL:         s.baseURL,
+		RepoRoot:        s.cfg.RepoRoot,
+		WorktreeDir:     filepath.Join(s.cfg.RepoRoot, s.cfg.WorktreeDir),
+		RunStatePath:    s.cfg.RunStatePath,
+		MemoryStorePath: s.cfg.MemoryStorePath,
 		SupportedResources: []string{
 			resourceOverview,
 			resourceRuns,
+			resourceMemory,
 			"ariadne://runs/{run_id}",
 			"ariadne://runs/{run_id}/logs",
 		},
-		SupportedTools: []string{"refresh_run_index", "start_run", "cancel_run"},
+		SupportedTools: []string{
+			"refresh_run_index", "start_run", "cancel_run",
+			"ariadne_remember", "ariadne_recall", "ariadne_forget", "ariadne_run_skill",
+		},
 		Notes: []string{
 			"Run inspection is backed by the shared run-state index written by Ariadne.",
-			"refresh_run_index can backfill records from existing worktrees when the index is stale or absent.",
-			"start_run and cancel_run operate on manual runs managed by this MCP server process.",
+			"Memory tools provide harness-wide persistent knowledge storage.",
+			"Skills allow executing pre-configured commands in the harness environment.",
 		},
 	}
 	return jsonResource(req.Params.URI, payload)
@@ -226,6 +292,14 @@ func (s *Server) readRuns(ctx context.Context, req *mcp.ReadResourceRequest) (*m
 		return nil, err
 	}
 	return jsonResource(req.Params.URI, runs)
+}
+
+func (s *Server) readMemory(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	entries, err := s.memoryStore.List()
+	if err != nil {
+		return nil, err
+	}
+	return jsonResource(req.Params.URI, entries)
 }
 
 func (s *Server) readRunDetail(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
@@ -282,8 +356,43 @@ func (s *Server) refreshRunIndex(ctx context.Context, req *mcp.CallToolRequest, 
 }
 
 func (s *Server) startRun(ctx context.Context, req *mcp.CallToolRequest, input startRunToolInput) (*mcp.CallToolResult, startRunToolOutput, error) {
+	if s.cfg.Gateway != nil {
+		inv := gateway.Invocation{
+			Title:       input.Title,
+			Prompt:      input.Description,
+			Labels:      input.Labels,
+			Provider:    input.Provider,
+			Persona:     input.Persona,
+			Routing:     input.Routing,
+			PublishMode: input.PublishMode,
+			SourceURL:   input.SourceURL,
+			Source:      "mcp", // mark the adapter source
+			// Timeout / Env / TaskID can be mapped if needed in future
+		}
+		if input.TaskID != "" {
+			inv.ID = input.TaskID // use as hint
+		}
+		run, err := s.cfg.Gateway.Submit(ctx, inv)
+		if err != nil {
+			return nil, startRunToolOutput{}, err
+		}
+		// Map back to legacy output shape for tool compatibility during transition
+		out := startRunToolOutput{
+			RunID:       run.ID,
+			TaskID:      run.TaskID,
+			Provider:    run.Provider,
+			Persona:     run.Persona,
+			PublishMode: "", // not tracked in gateway Run yet
+			Status:      run.Status,
+			Worktree:    run.Worktree,
+			StartedAt:   run.StartedAt,
+		}
+		return toolResult("manual run started (via gateway)", false), out, nil
+	}
+
+	// Legacy path
 	if s.cfg.Operator == nil {
-		return nil, startRunToolOutput{}, fmt.Errorf("operator service is not configured")
+		return nil, startRunToolOutput{}, fmt.Errorf("neither gateway nor operator service is configured")
 	}
 	output, err := s.cfg.Operator.StartRun(ctx, operator.StartRunInput(input))
 	if err != nil {
@@ -293,14 +402,127 @@ func (s *Server) startRun(ctx context.Context, req *mcp.CallToolRequest, input s
 }
 
 func (s *Server) cancelRun(ctx context.Context, req *mcp.CallToolRequest, input cancelRunToolInput) (*mcp.CallToolResult, cancelRunToolOutput, error) {
+	if s.cfg.Gateway != nil {
+		cancelled, err := s.cfg.Gateway.Cancel(strings.TrimSpace(input.RunID))
+		if err != nil {
+			return nil, cancelRunToolOutput{}, err
+		}
+		out := cancelRunToolOutput{
+			RunID:           input.RunID,
+			CancelRequested: cancelled,
+		}
+		return toolResult("cancel request recorded (via gateway)", false), out, nil
+	}
+
 	if s.cfg.Operator == nil {
-		return nil, cancelRunToolOutput{}, fmt.Errorf("operator service is not configured")
+		return nil, cancelRunToolOutput{}, fmt.Errorf("neither gateway nor operator service is configured")
 	}
 	output, err := s.cfg.Operator.CancelRun(strings.TrimSpace(input.RunID))
 	if err != nil {
 		return nil, cancelRunToolOutput{}, err
 	}
 	return toolResult("cancel request recorded", false), cancelRunToolOutput(*output), nil
+}
+
+func (s *Server) remember(ctx context.Context, req *mcp.CallToolRequest, input rememberToolInput) (*mcp.CallToolResult, any, error) {
+	if err := s.memoryStore.Remember(input.Key, input.Value, input.RunID); err != nil {
+		return nil, nil, err
+	}
+	return toolResult(fmt.Sprintf("remembered %q", input.Key), false), nil, nil
+}
+
+func (s *Server) recall(ctx context.Context, req *mcp.CallToolRequest, input recallToolInput) (*mcp.CallToolResult, any, error) {
+	val, ok, err := s.memoryStore.Recall(input.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return toolResult(fmt.Sprintf("key %q not found in memory", input.Key), true), nil, nil
+	}
+	return toolResult(val, false), nil, nil
+}
+
+func (s *Server) forget(ctx context.Context, req *mcp.CallToolRequest, input forgetToolInput) (*mcp.CallToolResult, any, error) {
+	if err := s.memoryStore.Forget(input.Key); err != nil {
+		return nil, nil, err
+	}
+	return toolResult(fmt.Sprintf("forgot %q", input.Key), false), nil, nil
+}
+
+func (s *Server) runSkill(ctx context.Context, req *mcp.CallToolRequest, input runSkillToolInput) (*mcp.CallToolResult, runSkillToolOutput, error) {
+	skill, ok := s.cfg.Skills[input.SkillName]
+	if !ok {
+		return nil, runSkillToolOutput{}, fmt.Errorf("skill %q not found", input.SkillName)
+	}
+
+	commandLine := skill.Command
+	workingDir := s.cfg.RepoRoot
+
+	if skill.IsPackage {
+		// For SKILL.md packages, if no command is specified, try to find a main script.
+		// We'll look for scripts/run.cjs, scripts/run.py, or scripts/run.sh
+		if commandLine == "" {
+			scriptsDir := filepath.Join(skill.Dir, "scripts")
+			for _, entry := range []struct {
+				file string
+				cmd  string
+			}{
+				{"run.cjs", "node"},
+				{"run.js", "node"},
+				{"run.py", "python3"},
+				{"run.sh", "bash"},
+			} {
+				scriptPath := filepath.Join(scriptsDir, entry.file)
+				if _, err := os.Stat(scriptPath); err == nil {
+					commandLine = entry.cmd + " " + scriptPath
+					break
+				}
+			}
+		}
+		// If still no command, maybe it's an informational skill or has a custom command.
+		if commandLine == "" {
+			return nil, runSkillToolOutput{}, fmt.Errorf("skill %q has no executable command or run script", input.SkillName)
+		}
+		// Skills can run in their own directory or the repo root.
+		// For Ariadne, we'll default to the repo root but allow the skill to be relative.
+	}
+
+	cmdParts := strings.Fields(commandLine)
+	if len(cmdParts) == 0 {
+		return nil, runSkillToolOutput{}, fmt.Errorf("skill %q has no command", input.SkillName)
+	}
+
+	if input.Args != "" {
+		cmdParts = append(cmdParts, strings.Fields(input.Args)...)
+	}
+
+	command := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+	command.Dir = workingDir
+	command.Env = os.Environ()
+	for k, v := range skill.Env {
+		command.Env = append(command.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	err := command.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, runSkillToolOutput{}, fmt.Errorf("execute skill %q: %w", input.SkillName, err)
+		}
+	}
+
+	output := runSkillToolOutput{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+		Exit:   exitCode,
+	}
+	return toolResult(fmt.Sprintf("skill %q executed with exit code %d", input.SkillName, exitCode), exitCode != 0), output, nil
 }
 
 func (s *Server) scanWorktrees(limit int) (int, int, int, error) {

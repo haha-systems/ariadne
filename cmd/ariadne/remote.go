@@ -90,6 +90,7 @@ func remoteStartCmd() *cobra.Command {
 	var provider string
 	var persona string
 	var routing string
+	var publishMode string
 	var sourceURL string
 	var labels []string
 
@@ -113,6 +114,9 @@ func remoteStartCmd() *cobra.Command {
 			if strings.TrimSpace(routing) != "" {
 				payload["routing"] = routing
 			}
+			if strings.TrimSpace(publishMode) != "" {
+				payload["publish_mode"] = publishMode
+			}
 			if strings.TrimSpace(sourceURL) != "" {
 				payload["source_url"] = sourceURL
 			}
@@ -129,6 +133,7 @@ func remoteStartCmd() *cobra.Command {
 	cmd.Flags().StringVar(&provider, "provider", "", "pin a provider for this run")
 	cmd.Flags().StringVar(&persona, "persona", "", "pin a persona for this run")
 	cmd.Flags().StringVar(&routing, "routing", "", "override routing strategy")
+	cmd.Flags().StringVar(&publishMode, "publish-mode", "", "publish mode override: required, allowed, or skip")
 	cmd.Flags().StringVar(&sourceURL, "source-url", "", "optional source URL")
 	cmd.Flags().StringSliceVar(&labels, "labels", nil, "task labels")
 	_ = cmd.MarkFlagRequired("title")

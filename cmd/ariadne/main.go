@@ -17,6 +17,8 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/memory"
+	"github.com/haha-systems/ariadne/internal/plugin"
 	"github.com/haha-systems/ariadne/internal/proof"
 	"github.com/haha-systems/ariadne/internal/provider"
 	"github.com/haha-systems/ariadne/internal/router"
@@ -53,6 +55,9 @@ func rootCmd() *cobra.Command {
 		mcpCmd(&cfgPath),
 		remoteCmd(),
 	)
+
+	_ = plugin.LoadCommandPlugins(root, repoRoot())
+
 	return root
 }
 
@@ -233,6 +238,7 @@ func startOrchestrator(ctx context.Context, cfg *config.Config) error {
 		cfg.Personas,
 		cfg.Routing.Strategy,
 		cfg.Ariadne.DefaultProvider,
+		cfg.Routing.RouterFile,
 	)
 
 	stateStore := runStateStore(cfg)
@@ -252,6 +258,8 @@ func startOrchestrator(ctx context.Context, cfg *config.Config) error {
 		RequireCIPass:     cfg.Proof.RequireCIPass,
 		RequirePRForIssue: true,
 		PRBaseBranch:      cfg.Proof.PRBaseBranch,
+		PublishMode:       cfg.Proof.PublishMode,
+		CICommand:         cfg.Proof.CICommand,
 		Env:               cfg.Sandbox.Env,
 	})
 
@@ -497,6 +505,10 @@ const runStatePathEnv = "ARIADNE_RUN_STATE_PATH"
 
 func runStateStore(cfg *config.Config) *runstate.Store {
 	return runstate.New(filepath.Join(repoRoot(), cfg.Sandbox.WorktreeDir, "index.json"))
+}
+
+func memoryStore(cfg *config.Config) *memory.Store {
+	return memory.New(filepath.Join(repoRoot(), ".ariadne", "memory.json"))
 }
 
 func runStateStoreFromGlobal(env map[string]string) *runstate.Store {

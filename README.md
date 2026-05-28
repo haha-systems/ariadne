@@ -104,7 +104,100 @@ workflow_file       = ".ariadne/WORKFLOW.md"
 
 # Shell commands run after every successful run (receives summary path as $1):
 # hooks = ["./scripts/notify.sh"]
+
+[skills.test]
+description = "Run project tests"
+command     = "go test ./..."
+env         = { "GO111MODULE" = "on" }
 ```
+
+## Skills and Memory
+
+Ariadne supports harness-wide persistent memory and configurable skills, allowing agents to share knowledge and execute pre-defined workflows. These features are exposed via Ariadne's MCP server.
+
+### Skills
+
+Skills are modular, self-contained packages that extend Ariadne's capabilities. They follow the Hermes `SKILL.md` standard and are discovered from `.ariadne/skills/` (workspace) or `~/.ariadne/skills/` (user).
+
+A skill directory structure looks like this:
+
+```
+.ariadne/skills/my-skill/
+├── SKILL.md          # Metadata and instructions
+└── scripts/
+    └── run.sh        # Executable logic (invoked via ariadne_run_skill)
+```
+
+The `SKILL.md` file must contain YAML frontmatter:
+
+```markdown
+---
+name: my-skill
+description: Does something useful
+---
+Instructions for the agent go here.
+```
+
+Skills are exposed via the `ariadne_run_skill` MCP tool. If a skill package contains a `scripts/run.{sh,py,js,cjs}` file, it will be executed when the skill is run. You can also define simple command-based skills in `ariadne.toml`:
+
+```toml
+[skills.test]
+description = "Run project tests"
+command     = "go test ./..."
+```
+
+### Memory
+
+Ariadne provides a harness-wide persistent memory store (located at `.ariadne/memory.json`). Agents can interact with it using the following MCP tools:
+
+- `ariadne_remember(key, value)` — Store a piece of knowledge.
+- `ariadne_recall(key)` — Retrieve a piece of knowledge.
+- `ariadne_forget(key)` — Delete a piece of knowledge.
+
+## Starlark Plugins
+
+Ariadne supports Starlark for "Logic Plugins". Currently, you can use Starlark to define complex routing rules.
+
+### Custom Routing
+
+To use custom routing, set `router_file` in your `ariadne.toml`:
+
+```toml
+[routing]
+strategy    = "round-robin"
+router_file = ".ariadne/route.star"
+```
+
+Then create `.ariadne/route.star` with a `route(task)` function:
+
+```python
+def route(task):
+    if "urgent" in task["labels"]:
+        return "gemini"
+    if "slow" in task["labels"]:
+        return {"provider": "claude", "persona": "senior-dev"}
+    if "race" in task["labels"]:
+        return {"providers": ["claude", "gemini"]}
+    return None # Fall back to default routing
+```
+
+### Custom Commands
+
+You can add new subcommands to the `ariadne` CLI by placing Starlark scripts in `.ariadne/commands/`.
+
+Example `.ariadne/commands/hello.star`:
+
+```python
+name = "hello"
+description = "Say hello"
+
+def run(args):
+    print("Hello from Starlark!")
+    if len(args) > 0:
+        print("Args: " + ", ".join(args))
+```
+
+Then run it with: `ariadne hello world`.
 
 ## Providers
 

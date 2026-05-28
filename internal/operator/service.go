@@ -32,19 +32,21 @@ type StartRunInput struct {
 	Provider       string            `json:"provider,omitempty"`
 	Persona        string            `json:"persona,omitempty"`
 	Routing        string            `json:"routing,omitempty"`
+	PublishMode    string            `json:"publish_mode,omitempty"`
 	SourceURL      string            `json:"source_url,omitempty"`
 	TimeoutMinutes int               `json:"timeout_minutes,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 }
 
 type StartRunOutput struct {
-	RunID      string            `json:"run_id"`
-	TaskID     string            `json:"task_id"`
-	Provider   string            `json:"provider"`
-	Persona    string            `json:"persona,omitempty"`
-	Status     domain.RunStatus  `json:"status"`
-	Worktree   string            `json:"worktree_path"`
-	StartedAt  time.Time         `json:"started_at"`
+	RunID       string             `json:"run_id"`
+	TaskID      string             `json:"task_id"`
+	Provider    string             `json:"provider"`
+	Persona     string             `json:"persona,omitempty"`
+	PublishMode string             `json:"publish_mode"`
+	Status      domain.RunStatus   `json:"status"`
+	Worktree    string             `json:"worktree_path"`
+	StartedAt   time.Time          `json:"started_at"`
 	TaskConfig *domain.TaskConfig `json:"task_config,omitempty"`
 }
 
@@ -60,6 +62,7 @@ type Service struct {
 	router      *router.Router
 	supervisor  *supervisor.Supervisor
 	collector   *proof.Collector
+	proofConfig proof.Config
 	source      worksource.WorkSource
 	stateStore  *runstate.Store
 	globalEnv   map[string]string
@@ -88,6 +91,7 @@ func New(cfg *config.Config, repoRoot string) (*Service, error) {
 			cfg.Personas,
 			cfg.Routing.Strategy,
 			cfg.Ariadne.DefaultProvider,
+			cfg.Routing.RouterFile,
 		),
 		supervisor: supervisor.New(supervisor.Config{
 			WorktreeBaseDir:   cfg.Sandbox.WorktreeDir,
@@ -101,8 +105,18 @@ func New(cfg *config.Config, repoRoot string) (*Service, error) {
 			RequireCIPass:     cfg.Proof.RequireCIPass,
 			RequirePRForIssue: true,
 			PRBaseBranch:      cfg.Proof.PRBaseBranch,
+			PublishMode:       cfg.Proof.PublishMode,
+			CICommand:         cfg.Proof.CICommand,
 			Env:               cfg.Sandbox.Env,
 		}),
+		proofConfig: proof.Config{
+			RequireCIPass:     cfg.Proof.RequireCIPass,
+			RequirePRForIssue: true,
+			PRBaseBranch:      cfg.Proof.PRBaseBranch,
+			PublishMode:       cfg.Proof.PublishMode,
+			CICommand:         cfg.Proof.CICommand,
+			Env:               cfg.Sandbox.Env,
+		},
 		source:     worksource.NewManualSource(),
 		stateStore: stateStore,
 		globalEnv:  globalEnv,
@@ -137,6 +151,7 @@ func (s *Service) StartRun(ctx context.Context, input StartRunInput) (*StartRunO
 	if route.Persona != nil {
 		personaName = route.Persona.Name
 	}
+	publishMode := normalizePublishMode(input.PublishMode, s.proofConfig.PublishMode)
 
 	if err := s.stateStore.Upsert(runstate.Record{
 		ID:           run.ID,
@@ -151,6 +166,9 @@ func (s *Service) StartRun(ctx context.Context, input StartRunInput) (*StartRunO
 		WorktreePath: worktreePath,
 		StartedAt:    startedAt,
 		LastEvent:    "queued",
+		Metadata: map[string]string{
+			"publish_mode": publishMode,
+		},
 	}); err != nil {
 		return nil, err
 	}
@@ -158,16 +176,17 @@ func (s *Service) StartRun(ctx context.Context, input StartRunInput) (*StartRunO
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.trackRun(run.ID, cancel)
 
-	go s.executeManualRun(runCtx, run, task, route.Providers[0], route.Persona)
+	go s.executeManualRun(runCtx, run, task, route.Providers[0], route.Persona, publishMode)
 
 	return &StartRunOutput{
-		RunID:      run.ID,
-		TaskID:     task.ID,
-		Provider:   run.Provider,
-		Persona:    personaName,
-		Status:     domain.RunStatusRunning,
-		Worktree:   worktreePath,
-		StartedAt:  startedAt,
+		RunID:       run.ID,
+		TaskID:      task.ID,
+		Provider:    run.Provider,
+		Persona:     personaName,
+		PublishMode: publishMode,
+		Status:      domain.RunStatusRunning,
+		Worktree:    worktreePath,
+		StartedAt:   startedAt,
 		TaskConfig: task.Config,
 	}, nil
 }
@@ -198,7 +217,7 @@ func (s *Service) CancelRun(runID string) (*CancelRunOutput, error) {
 	return nil, fmt.Errorf("run %s is not known or not active", runID)
 }
 
-func (s *Service) executeManualRun(ctx context.Context, run *domain.Run, task *domain.Task, p provider.AgentProvider, persona *config.PersonaConfig) {
+func (s *Service) executeManualRun(ctx context.Context, run *domain.Run, task *domain.Task, p provider.AgentProvider, persona *config.PersonaConfig, publishMode string) {
 	defer s.untrackRun(run.ID)
 
 	result := s.supervisor.Execute(ctx, supervisor.RunRequest{
@@ -224,7 +243,14 @@ func (s *Service) executeManualRun(ctx context.Context, run *domain.Run, task *d
 		taskEnv = task.Config.Env
 	}
 
-	bundle, err := s.collector.Collect(ctx, run, task, taskEnv, p, s.source)
+	collector := s.collector
+	if publishMode != normalizePublishMode("", s.proofConfig.PublishMode) {
+		cfg := s.proofConfig
+		cfg.PublishMode = publishMode
+		collector = proof.New(cfg)
+	}
+
+	bundle, err := collector.Collect(ctx, run, task, taskEnv, p, s.source)
 	if err != nil {
 		_ = s.stateStore.Update(run.ID, func(r *runstate.Record) error {
 			r.Status = domain.RunStatusFailed
@@ -367,6 +393,23 @@ func buildProviders(cfg *config.Config) map[string]provider.AgentProvider {
 
 func newRunID() string {
 	return fmt.Sprintf("run_%d", time.Now().UnixNano())
+}
+
+func normalizePublishMode(override, fallback string) string {
+	mode := strings.ToLower(strings.TrimSpace(override))
+	switch mode {
+	case "required", "allowed", "skip":
+		return mode
+	case "":
+		switch strings.ToLower(strings.TrimSpace(fallback)) {
+		case "allowed", "skip":
+			return strings.ToLower(strings.TrimSpace(fallback))
+		default:
+			return "required"
+		}
+	default:
+		return "required"
+	}
 }
 
 func WriteToolResult(path string, payload any) error {

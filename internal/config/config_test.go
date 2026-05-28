@@ -68,6 +68,8 @@ strategy = "round-robin"
 [proof]
 require_ci_pass = true
 pr_base_branch = "main"
+publish_mode = "allowed"
+ci_command = ["bash", "-lc", "go test ./..."]
 
 [sandbox]
 worktree_dir = ".ariadne/runs"
@@ -99,6 +101,12 @@ preserve_on_failure = true
 	}
 	if cfg.Proof.PRBaseBranch != "main" {
 		t.Errorf("unexpected pr_base_branch: %s", cfg.Proof.PRBaseBranch)
+	}
+	if cfg.Proof.PublishMode != "allowed" {
+		t.Errorf("unexpected publish_mode: %s", cfg.Proof.PublishMode)
+	}
+	if len(cfg.Proof.CICommand) != 3 || cfg.Proof.CICommand[0] != "bash" {
+		t.Errorf("unexpected ci_command: %v", cfg.Proof.CICommand)
 	}
 }
 

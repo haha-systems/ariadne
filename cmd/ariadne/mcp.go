@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/haha-systems/ariadne/internal/config"
+	"github.com/haha-systems/ariadne/internal/gateway"
 	"github.com/haha-systems/ariadne/internal/mcpserver"
 	"github.com/haha-systems/ariadne/internal/operator"
 )
@@ -33,18 +34,35 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
+			// Build the new gateway control plane (preferred path).
+			providers := gateway.BuildProvidersFromConfig(cfg)
+			sup := gateway.DefaultSupervisorForGateway(cfg, repoRoot())
+			exec := gateway.NewSupervisorExecutor(repoRoot(), sup, providers, cfg.Personas)
+
+			gw, err := gateway.New(gateway.Config{
+				RepoRoot:        repoRoot(),
+				DefaultProvider: cfg.Ariadne.DefaultProvider,
+			}, exec)
+			if err != nil {
+				return fmt.Errorf("create gateway: %w", err)
+			}
+
+			// Also create legacy operator for now (transition / other tools that still need it).
 			operatorSvc, err := operator.New(cfg, repoRoot())
 			if err != nil {
 				return err
 			}
 
 			server := mcpserver.New(mcpserver.Config{
-				RepoRoot:      repoRoot(),
-				WorktreeDir:   cfg.Sandbox.WorktreeDir,
-				RunStatePath:  runStateStore(cfg).Path(),
-				ListenAddress: listenAddr,
-				MCPPath:       mcpPath,
-				Operator:      operatorSvc,
+				RepoRoot:        repoRoot(),
+				WorktreeDir:     cfg.Sandbox.WorktreeDir,
+				RunStatePath:    runStateStore(cfg).Path(),
+				MemoryStorePath: memoryStore(cfg).Path(),
+				Skills:          cfg.Skills,
+				ListenAddress:   listenAddr,
+				MCPPath:         mcpPath,
+				Operator:        operatorSvc,
+				Gateway:         gw,
 			}, mcpserver.Options{})
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Ariadne MCP listening on http://%s%s\n", listenAddr, normalizeMCPPath(mcpPath))

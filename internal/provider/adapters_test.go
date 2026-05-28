@@ -1,6 +1,9 @@
 package provider
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -15,6 +18,13 @@ func TestCodexAdapter_DefaultBinary(t *testing.T) {
 	a := NewCodexAdapter("", nil)
 	if a.shell.binary != "codex" {
 		t.Errorf("expected binary=codex, got %s", a.shell.binary)
+	}
+}
+
+func TestCodexAdapter_StripsLegacyExecFromExtraArgs(t *testing.T) {
+	a := NewCodexAdapter("", []string{"exec", "--full-auto"})
+	if len(a.shell.extraArgs) != 1 || a.shell.extraArgs[0] != "--full-auto" {
+		t.Fatalf("unexpected sanitized args: %v", a.shell.extraArgs)
 	}
 }
 
@@ -90,5 +100,44 @@ func TestContainsFlag(t *testing.T) {
 	}
 	if containsFlag(args, "--baz") {
 		t.Error("expected false for --baz")
+	}
+}
+
+func TestCodexLaunchArgs_IncludeSharedGitAndJJDirs(t *testing.T) {
+	repo := t.TempDir()
+	initCmd := exec.Command("git", "init", "-q", repo)
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v: %s", err, out)
+	}
+	gitDir := filepath.Join(repo, ".git")
+	jjDir := filepath.Join(repo, ".jj")
+	if err := os.Mkdir(jjDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	gitDir, err = filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(.git) failed: %v", err)
+	}
+	jjDir, err = filepath.EvalSymlinks(jjDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(.jj) failed: %v", err)
+	}
+	args, err := codexLaunchArgs(repo)
+	if err != nil {
+		t.Fatalf("codexLaunchArgs returned error: %v", err)
+	}
+
+	if len(args) != 5 {
+		t.Fatalf("unexpected arg count: %v", args)
+	}
+	if args[0] != "exec" {
+		t.Fatalf("expected exec as first arg, got %q", args[0])
+	}
+	if args[1] != "--add-dir" || args[2] != gitDir {
+		t.Fatalf("expected shared git dir in args, got %v", args)
+	}
+	if args[3] != "--add-dir" || args[4] != jjDir {
+		t.Fatalf("expected shared jj dir in args, got %v", args)
 	}
 }

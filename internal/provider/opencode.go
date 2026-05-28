@@ -1,6 +1,10 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"os"
+)
 
 // OpenCodeAdapter invokes the `opencode` binary (sst/opencode).
 type OpenCodeAdapter struct{ shell shellAdapter }
@@ -22,5 +26,9 @@ func (a *OpenCodeAdapter) Name() string                                    { ret
 func (a *OpenCodeAdapter) Capabilities() []Capability                     { return a.shell.adapterCapabilities() }
 func (a *OpenCodeAdapter) CostEstimate(n int) (float64, bool)             { return a.shell.adapterCostEstimate(n) }
 func (a *OpenCodeAdapter) Run(ctx context.Context, rc RunContext) (RunHandle, error) {
-	return a.shell.adapterRun(ctx, rc, "run", "--file", rc.TaskFile)
+	f, err := os.Open(rc.TaskFile)
+	if err != nil {
+		return nil, fmt.Errorf("opencode: open task file: %w", err)
+	}
+	return a.shell.adapterRunWithStdin(ctx, rc, f, "run")
 }

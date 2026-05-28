@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "charon": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Charon (local)",
+      "options": {
+        "baseURL": "http://localhost:8080/v1",
+        "apiKey": "test_api_key_123"
+      },
+      "models": {
+        "charon/gpt-4.1-mini": {
+          "name": "GPT-4.1 Mini (via Charon)"
+        },
+        "charon/claude-4-6-sonnet": {
+          "name": "Claude 4.6 Sonnet (via Charon)"
+        },
+        "MiniMaxAI/MiniMax-M2.5": {
+          "name": "MiniMax M2.5 (via Charon)"
+        }
+      }
+    },
+    "Parasail": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Parasail",
+      "options": {
+        "baseURL": "https://api.parasail.io/v1"
+      },
+      "models": {
+        "MiniMaxAI/MiniMax-M2.5": {
+          "name": "Minimax M2.5"
+        }
+      }
+    }
+  }
+}

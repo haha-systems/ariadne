@@ -50,7 +50,7 @@ func makePersonasWithProvider(name, providerName string) map[string]config.Perso
 
 func TestRouter_PersonaFrontMatter(t *testing.T) {
 	personas := makePersonas("lead-engineer")
-	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestRouter_PersonaFrontMatter(t *testing.T) {
 
 func TestRouter_PersonaFrontMatter_WithProviderOverride(t *testing.T) {
 	personas := makePersonasWithProvider("lead-engineer", "gemini")
-	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestRouter_PersonaFrontMatter_WithProviderOverride(t *testing.T) {
 func TestRouter_PersonaLabelRoute(t *testing.T) {
 	personas := makePersonas("lead-engineer")
 	personaRoutes := map[string]string{"feature": "lead-engineer"}
-	r := NewWithPersonas(makeProviders("claude"), nil, personaRoutes, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude"), nil, personaRoutes, personas, "round-robin", "claude", "")
 	task := &domain.Task{Labels: []string{"ariadne", "feature"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -97,7 +97,7 @@ func TestRouter_PersonaLabelRoute(t *testing.T) {
 
 func TestRouter_PersonaUnknown_FallsThrough(t *testing.T) {
 	// Unknown persona name in front-matter → falls through to default provider.
-	r := NewWithPersonas(makeProviders("claude"), nil, nil, map[string]config.PersonaConfig{}, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude"), nil, nil, map[string]config.PersonaConfig{}, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "nonexistent"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestRouter_PersonaUnknown_FallsThrough(t *testing.T) {
 func TestRouter_AgentWinsOverPersona(t *testing.T) {
 	// agent: in front-matter wins over persona:.
 	personas := makePersonas("lead-engineer")
-	r := NewWithPersonas(makeProviders("claude", "codex"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "codex"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Agent: "codex", Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestRouter_PersonaRouteBeforeLabelRoute(t *testing.T) {
 	personas := makePersonas("lead-engineer")
 	personaRoutes := map[string]string{"feature": "lead-engineer"}
 	labelRoutes := map[string]string{"feature": "gemini"}
-	r := NewWithPersonas(makeProviders("claude", "gemini"), labelRoutes, personaRoutes, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), labelRoutes, personaRoutes, personas, "round-robin", "claude", "")
 	task := &domain.Task{Labels: []string{"feature"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -145,7 +145,7 @@ func TestRouter_PersonaRouteBeforeLabelRoute(t *testing.T) {
 }
 
 func TestRouter_Pinned(t *testing.T) {
-	r := New(makeProviders("claude", "codex"), nil, "round-robin", "claude")
+	r := New(makeProviders("claude", "codex"), nil, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Agent: "codex"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestRouter_Pinned(t *testing.T) {
 }
 
 func TestRouter_Pinned_UnknownProvider(t *testing.T) {
-	r := New(makeProviders("claude"), nil, "round-robin", "claude")
+	r := New(makeProviders("claude"), nil, "round-robin", "claude", "")
 	_, err := r.Route(&domain.Task{Config: &domain.TaskConfig{Agent: "nonexistent"}})
 	if err == nil {
 		t.Error("expected error for unknown provider")
@@ -166,7 +166,7 @@ func TestRouter_Pinned_UnknownProvider(t *testing.T) {
 
 func TestRouter_LabelBased(t *testing.T) {
 	routes := map[string]string{"big-context": "gemini"}
-	r := New(makeProviders("claude", "gemini"), routes, "round-robin", "claude")
+	r := New(makeProviders("claude", "gemini"), routes, "round-robin", "claude", "")
 	task := &domain.Task{Labels: []string{"ariadne", "big-context"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestRouter_LabelBased(t *testing.T) {
 }
 
 func TestRouter_RoundRobin(t *testing.T) {
-	r := New(makeProviders("a", "b"), nil, "round-robin", "a")
+	r := New(makeProviders("a", "b"), nil, "round-robin", "a", "")
 	task := &domain.Task{}
 	seen := map[string]int{}
 	for range 4 {
@@ -199,7 +199,7 @@ func TestRouter_Cheapest(t *testing.T) {
 		"cheap":     &stubProvider{name: "cheap", costPer1kTokens: 0.001},
 		"mid":       &stubProvider{name: "mid", costPer1kTokens: 0.010},
 	}
-	r := New(providers, nil, "cheapest", "expensive")
+	r := New(providers, nil, "cheapest", "expensive", "")
 	result, err := r.Route(&domain.Task{})
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestRouter_Cheapest(t *testing.T) {
 }
 
 func TestRouter_Cheapest_AllUnknown_FallsBackToRoundRobin(t *testing.T) {
-	r := New(makeProviders("a", "b"), nil, "cheapest", "a")
+	r := New(makeProviders("a", "b"), nil, "cheapest", "a", "")
 	// stubProvider returns (0, false) when costPer1kTokens == 0
 	result, err := r.Route(&domain.Task{})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestRouter_FrontMatterRouting_Cheapest(t *testing.T) {
 		"expensive": &stubProvider{name: "expensive", costPer1kTokens: 0.030},
 		"cheap":     &stubProvider{name: "cheap", costPer1kTokens: 0.001},
 	}
-	r := New(providers, nil, "round-robin", "expensive")
+	r := New(providers, nil, "round-robin", "expensive", "")
 	// Per-task front-matter overrides global strategy.
 	task := &domain.Task{Config: &domain.TaskConfig{Routing: "cheapest"}}
 	result, err := r.Route(task)
@@ -239,7 +239,7 @@ func TestRouter_FrontMatterRouting_Cheapest(t *testing.T) {
 }
 
 func TestRouter_Race(t *testing.T) {
-	r := New(makeProviders("a", "b", "c"), nil, "race 2", "a")
+	r := New(makeProviders("a", "b", "c"), nil, "race 2", "a", "")
 	result, err := r.Route(&domain.Task{})
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestRouter_Race(t *testing.T) {
 }
 
 func TestRouter_Race_FewerProvidersThanN(t *testing.T) {
-	r := New(makeProviders("a"), nil, "race 5", "a")
+	r := New(makeProviders("a"), nil, "race 5", "a", "")
 	result, err := r.Route(&domain.Task{})
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestRouter_Race_FewerProvidersThanN(t *testing.T) {
 }
 
 func TestRouter_Race_FrontMatter(t *testing.T) {
-	r := New(makeProviders("a", "b", "c"), nil, "round-robin", "a")
+	r := New(makeProviders("a", "b", "c"), nil, "round-robin", "a", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Routing: "race 3"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -281,7 +281,7 @@ func TestRouter_Race_FrontMatter(t *testing.T) {
 }
 
 func TestRouter_Default(t *testing.T) {
-	r := New(makeProviders("claude"), nil, "unknown-strategy", "claude")
+	r := New(makeProviders("claude"), nil, "unknown-strategy", "claude", "")
 	result, err := r.Route(&domain.Task{})
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestRouter_Default(t *testing.T) {
 }
 
 func TestRouter_NoProviders(t *testing.T) {
-	r := New(map[string]provider.AgentProvider{}, nil, "round-robin", "")
+	r := New(map[string]provider.AgentProvider{}, nil, "round-robin", "", "")
 	_, err := r.Route(&domain.Task{})
 	if err == nil {
 		t.Error("expected error when no providers available")
@@ -303,7 +303,7 @@ func TestRouter_Persona_FrontMatter(t *testing.T) {
 	personas := map[string]config.PersonaConfig{
 		"lead-engineer": {Name: "lead-engineer", Provider: "claude"},
 	}
-	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -322,7 +322,7 @@ func TestRouter_Persona_LabelRoute(t *testing.T) {
 		"project-manager": {Name: "project-manager", Provider: "gemini"},
 	}
 	personaRoutes := map[string]string{"planning": "project-manager"}
-	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, personaRoutes, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, personaRoutes, personas, "round-robin", "claude", "")
 	task := &domain.Task{Labels: []string{"ariadne", "planning"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestRouter_Persona_NoPersonaToml_UsesDefault(t *testing.T) {
 	personas := map[string]config.PersonaConfig{
 		"lead-engineer": {Name: "lead-engineer"}, // no Provider
 	}
-	r := NewWithPersonas(makeProviders("claude"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -354,7 +354,7 @@ func TestRouter_Persona_NoPersonaToml_UsesDefault(t *testing.T) {
 
 func TestRouter_Persona_UnknownFallsThrough(t *testing.T) {
 	// Unknown persona in front-matter → falls through to strategy.
-	r := NewWithPersonas(makeProviders("claude"), nil, nil, map[string]config.PersonaConfig{}, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude"), nil, nil, map[string]config.PersonaConfig{}, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Persona: "nonexistent"}}
 	result, err := r.Route(task)
 	if err != nil {
@@ -373,7 +373,7 @@ func TestRouter_Persona_AgentPinWins(t *testing.T) {
 	personas := map[string]config.PersonaConfig{
 		"lead-engineer": {Name: "lead-engineer", Provider: "gemini"},
 	}
-	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude")
+	r := NewWithPersonas(makeProviders("claude", "gemini"), nil, nil, personas, "round-robin", "claude", "")
 	task := &domain.Task{Config: &domain.TaskConfig{Agent: "claude", Persona: "lead-engineer"}}
 	result, err := r.Route(task)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/haha-systems/ariadne/internal/domain"
@@ -18,28 +19,28 @@ type LinearSource struct {
 	client       *http.Client
 	token        string
 	teamID       string
+	project      string
 	stateFilter  []string
+	pendingState string
 	claimedState string // Linear state name to set when claiming (e.g. "In Progress")
 }
 
 // NewLinearSource creates a LinearSource authenticated with the given API key.
-func NewLinearSource(token, teamID string, stateFilter []string) (*LinearSource, error) {
+func NewLinearSource(token, teamID, project string, stateFilter []string) (*LinearSource, error) {
 	if token == "" {
 		return nil, fmt.Errorf("linear: API token required")
 	}
 	if teamID == "" {
 		return nil, fmt.Errorf("linear: team_id required")
 	}
-	claimedState := "In Progress"
-	if len(stateFilter) > 0 {
-		claimedState = stateFilter[0]
-	}
 	return &LinearSource{
 		client:       &http.Client{Timeout: 15 * time.Second},
 		token:        token,
 		teamID:       teamID,
+		project:      project,
 		stateFilter:  stateFilter,
-		claimedState: claimedState,
+		pendingState: pendingState(stateFilter),
+		claimedState: "In Progress",
 	}, nil
 }
 
@@ -48,11 +49,11 @@ func (s *LinearSource) Name() string { return "linear" }
 // Poll fetches issues matching the state filter that don't have the claimed label.
 func (s *LinearSource) Poll(ctx context.Context) ([]*domain.Task, error) {
 	query := `
-query($teamId: String!, $states: [String!]!) {
+query($teamId: ID!, $states: [String!]!, $project: String) {
   issues(filter: {
     team: { id: { eq: $teamId } }
     state: { name: { in: $states } }
-    labels: { name: { nin: ["ariadne:claimed", "ariadne:running"] } }
+    project: { name: { eq: $project } }
   }) {
     nodes {
       id
@@ -67,8 +68,9 @@ query($teamId: String!, $states: [String!]!) {
 }`
 
 	vars := map[string]any{
-		"teamId": s.teamID,
-		"states": s.stateFilter,
+		"teamId":  s.teamID,
+		"states":  s.stateFilter,
+		"project": s.project,
 	}
 
 	var result struct {
@@ -102,16 +104,17 @@ func (s *LinearSource) Claim(ctx context.Context, task *domain.Task) error {
 		return fmt.Errorf("claim %s: ensure label: %w", task.ID, err)
 	}
 
+	stateID, err := s.stateIDByName(ctx, s.claimedState)
+	if err != nil {
+		return fmt.Errorf("claim %s: resolve claimed state: %w", task.ID, err)
+	}
+
 	mutation := `
-mutation($issueId: String!, $labelIds: [String!]!) {
-  issueAddLabel(id: $issueId, labelId: $labelIds[0]) {
+mutation($issueId: String!, $labelId: String!, $stateId: String!) {
+  issueAddLabel(id: $issueId, labelId: $labelId) {
     success
   }
-}`
-	// Linear's issueAddLabel takes a single label — call it once.
-	mutation = `
-mutation($issueId: String!, $labelId: String!) {
-  issueAddLabel(id: $issueId, labelId: $labelId) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
     success
   }
 }`
@@ -119,6 +122,7 @@ mutation($issueId: String!, $labelId: String!) {
 	vars := map[string]any{
 		"issueId": task.ID,
 		"labelId": labelID,
+		"stateId": stateID,
 	}
 
 	var result struct {
@@ -176,7 +180,7 @@ mutation($issueId: String!, $body: String!) {
 // ensureLabel returns the ID of the given label, creating it if it doesn't exist.
 func (s *LinearSource) ensureLabel(ctx context.Context, name, color string) (string, error) {
 	query := `
-query($teamId: String!, $name: String!) {
+query($teamId: ID!, $name: String!) {
   issueLabels(filter: { team: { id: { eq: $teamId } }, name: { eq: $name } }) {
     nodes { id }
   }
@@ -184,7 +188,9 @@ query($teamId: String!, $name: String!) {
 	var result struct {
 		Data struct {
 			IssueLabels struct {
-				Nodes []struct{ ID string `json:"id"` } `json:"nodes"`
+				Nodes []struct {
+					ID string `json:"id"`
+				} `json:"nodes"`
 			} `json:"issueLabels"`
 		} `json:"data"`
 		Errors []linearError `json:"errors"`
@@ -209,7 +215,9 @@ mutation($teamId: String!, $name: String!, $color: String!) {
 	var createResult struct {
 		Data struct {
 			IssueLabelCreate struct {
-				IssueLabel struct{ ID string `json:"id"` } `json:"issueLabel"`
+				IssueLabel struct {
+					ID string `json:"id"`
+				} `json:"issueLabel"`
 			} `json:"issueLabelCreate"`
 		} `json:"data"`
 		Errors []linearError `json:"errors"`
@@ -225,6 +233,35 @@ mutation($teamId: String!, $name: String!, $color: String!) {
 		return "", fmt.Errorf("%s", createResult.Errors[0].Message)
 	}
 	return createResult.Data.IssueLabelCreate.IssueLabel.ID, nil
+}
+
+func (s *LinearSource) stateIDByName(ctx context.Context, name string) (string, error) {
+	query := `
+query($teamId: ID!, $name: String!) {
+  workflowStates(filter: { team: { id: { eq: $teamId } }, name: { eq: $name } }) {
+    nodes { id }
+  }
+}`
+	var result struct {
+		Data struct {
+			WorkflowStates struct {
+				Nodes []struct {
+					ID string `json:"id"`
+				} `json:"nodes"`
+			} `json:"workflowStates"`
+		} `json:"data"`
+		Errors []linearError `json:"errors"`
+	}
+	if err := s.gql(ctx, query, map[string]any{"teamId": s.teamID, "name": name}, &result); err != nil {
+		return "", err
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("%s", result.Errors[0].Message)
+	}
+	if len(result.Data.WorkflowStates.Nodes) == 0 {
+		return "", fmt.Errorf("state %q not found", name)
+	}
+	return result.Data.WorkflowStates.Nodes[0].ID, nil
 }
 
 func (s *LinearSource) gql(ctx context.Context, query string, vars map[string]any, out any) error {
@@ -254,14 +291,16 @@ func (s *LinearSource) gql(ctx context.Context, query string, vars map[string]an
 
 // linearIssue is the GraphQL response shape for an issue.
 type linearIssue struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description string         `json:"description"`
-	URL         string         `json:"url"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	UpdatedAt   time.Time      `json:"updatedAt"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	URL         string    `json:"url"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 	Labels      struct {
-		Nodes []struct{ Name string `json:"name"` } `json:"nodes"`
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
 	} `json:"labels"`
 }
 
@@ -310,4 +349,43 @@ func (s *LinearSource) RecordReviewOutcome(_ context.Context, _ *domain.Task, _ 
 // MarkPRNeedsReview is not supported for Linear and is a no-op.
 func (s *LinearSource) MarkPRNeedsReview(_ context.Context, _ int, _ int) error {
 	return nil
+}
+
+// RecordIssueFailure returns a failed issue task to the pending workflow state
+// so Ariadne can retry it on a later poll.
+func (s *LinearSource) RecordIssueFailure(ctx context.Context, task *domain.Task, _ string) error {
+	stateID, err := s.stateIDByName(ctx, s.pendingState)
+	if err != nil {
+		return fmt.Errorf("linear reset issue state: %w", err)
+	}
+
+	mutation := `
+mutation($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+  }
+}`
+
+	var result struct {
+		Data   map[string]any `json:"data"`
+		Errors []linearError  `json:"errors"`
+	}
+
+	if err := s.gql(ctx, mutation, map[string]any{
+		"issueId": task.ID,
+		"stateId": stateID,
+	}, &result); err != nil {
+		return err
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("linear reset issue state: %s", result.Errors[0].Message)
+	}
+	return nil
+}
+
+func pendingState(stateFilter []string) string {
+	if len(stateFilter) > 0 && strings.TrimSpace(stateFilter[0]) != "" {
+		return stateFilter[0]
+	}
+	return "Todo"
 }

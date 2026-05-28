@@ -38,11 +38,12 @@ func TestServerExposesRunResourcesAndRefreshTool(t *testing.T) {
 	}
 
 	cfg := Config{
-		RepoRoot:      repoRoot,
-		WorktreeDir:   worktreeDir,
-		RunStatePath:  filepath.Join(repoRoot, worktreeDir, "index.json"),
-		ListenAddress: "127.0.0.1:7619",
-		MCPPath:       "/mcp",
+		RepoRoot:        repoRoot,
+		WorktreeDir:     worktreeDir,
+		RunStatePath:    filepath.Join(repoRoot, worktreeDir, "index.json"),
+		MemoryStorePath: filepath.Join(repoRoot, ".ariadne", "memory.json"),
+		ListenAddress:   "127.0.0.1:7619",
+		MCPPath:         "/mcp",
 	}
 	server := New(cfg, Options{Now: func() time.Time { return time.Date(2026, 4, 9, 20, 3, 0, 0, time.UTC) }})
 
@@ -147,12 +148,13 @@ func TestServerStartAndCancelRunTools(t *testing.T) {
 	}
 
 	server := New(Config{
-		RepoRoot:      repoRoot,
-		WorktreeDir:   cfg.Sandbox.WorktreeDir,
-		RunStatePath:  filepath.Join(repoRoot, cfg.Sandbox.WorktreeDir, "index.json"),
-		ListenAddress: "127.0.0.1:7619",
-		MCPPath:       "/mcp",
-		Operator:      operatorSvc,
+		RepoRoot:        repoRoot,
+		WorktreeDir:     cfg.Sandbox.WorktreeDir,
+		RunStatePath:    filepath.Join(repoRoot, cfg.Sandbox.WorktreeDir, "index.json"),
+		MemoryStorePath: filepath.Join(repoRoot, ".ariadne", "memory.json"),
+		ListenAddress:   "127.0.0.1:7619",
+		MCPPath:         "/mcp",
+		Operator:        operatorSvc,
 	}, Options{})
 
 	httpServer := httptest.NewServer(server.Handler())

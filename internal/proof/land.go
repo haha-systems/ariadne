@@ -33,7 +33,7 @@ func (l *Lander) Land(ctx context.Context, worktreePath string) (string, error) 
 
 	// 3. Re-run CI in the rebased worktree.
 	collector := New(l.cfg)
-	ci, ciErr := collector.runCI(ctx, worktreePath)
+	ci, ciErr := collector.runCI(ctx, worktreePath, nil)
 	if ciErr != nil || !ci.Passed {
 		return "", fmt.Errorf("CI failed after rebase (passed=%v, failures=%d): %v",
 			ci.Passed, ci.Failures, ciErr)

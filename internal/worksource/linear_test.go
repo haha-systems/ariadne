@@ -8,29 +8,35 @@ import (
 )
 
 func TestNewLinearSource_MissingToken(t *testing.T) {
-	_, err := NewLinearSource("", "team-123", nil)
+	_, err := NewLinearSource("", "team-123", "", nil)
 	if err == nil {
 		t.Error("expected error for missing token")
 	}
 }
 
 func TestNewLinearSource_MissingTeamID(t *testing.T) {
-	_, err := NewLinearSource("token", "", nil)
+	_, err := NewLinearSource("token", "", "", nil)
 	if err == nil {
 		t.Error("expected error for missing team_id")
 	}
 }
 
 func TestNewLinearSource_Valid(t *testing.T) {
-	s, err := NewLinearSource("token", "team-123", []string{"Todo"})
+	s, err := NewLinearSource("token", "team-123", "Ari", []string{"Todo"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if s.Name() != "linear" {
 		t.Errorf("unexpected name: %s", s.Name())
 	}
-	if s.claimedState != "Todo" {
-		t.Errorf("expected claimedState=Todo, got %s", s.claimedState)
+	if s.claimedState != "In Progress" {
+		t.Errorf("expected claimedState=In Progress, got %s", s.claimedState)
+	}
+	if s.pendingState != "Todo" {
+		t.Errorf("expected pendingState=Todo, got %s", s.pendingState)
+	}
+	if s.project != "Ari" {
+		t.Errorf("expected project=Ari, got %s", s.project)
 	}
 }
 
@@ -43,7 +49,9 @@ func TestLinearIssueToTask_FrontMatter(t *testing.T) {
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
-	issue.Labels.Nodes = []struct{ Name string `json:"name"` }{
+	issue.Labels.Nodes = []struct {
+		Name string `json:"name"`
+	}{
 		{Name: "ariadne"},
 		{Name: "backend"},
 	}
@@ -71,12 +79,14 @@ func TestLinearIssueToTask_FrontMatter(t *testing.T) {
 }
 
 func TestNewLinearSource_DefaultClaimedState(t *testing.T) {
-	s, err := NewLinearSource("token", "team-123", nil)
+	s, err := NewLinearSource("token", "team-123", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No state filter — claimedState should fall back to default.
 	if s.claimedState != "In Progress" {
 		t.Errorf("expected default claimedState='In Progress', got %q", s.claimedState)
+	}
+	if s.pendingState != "Todo" {
+		t.Errorf("expected default pendingState='Todo', got %q", s.pendingState)
 	}
 }

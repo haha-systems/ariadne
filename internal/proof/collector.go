@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,10 +30,13 @@ type ReviewNotifier interface {
 
 // Config controls what proof collection does.
 type Config struct {
-	RequireCIPass bool
-	PRBaseBranch  string
+	RequireCIPass     bool
+	RequirePRForIssue bool
+	PRBaseBranch      string
+	PublishMode       string
 	// CICommand is the command to run tests (default: inferred from repo).
 	CICommand []string
+	Env       map[string]string
 }
 
 // Collector gathers proof-of-work artifacts after a successful run.
@@ -48,7 +52,7 @@ func New(cfg Config) *Collector {
 // proof/summary.json into the run's worktree. It returns the ProofBundle.
 // provider may be nil; if non-nil and able to estimate cost, CostUSD is populated.
 // notifier may be nil; if non-nil and the bundle has a PRUrl, MarkPRNeedsReview is called.
-func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.Task, provider CostEstimator, notifier ReviewNotifier) (*domain.ProofBundle, error) {
+func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.Task, env map[string]string, provider CostEstimator, notifier ReviewNotifier) (*domain.ProofBundle, error) {
 	charmlog.Info("proof collecting", "run_id", run.ID, "task_id", run.TaskID)
 	started := time.Now()
 
@@ -58,8 +62,12 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 		Provider: run.Provider,
 	}
 
-	// 1. Run CI.
-	ci, err := c.runCI(ctx, run.WorktreePath)
+	// 1. Run CI. Merge global cfg.Env with task-specific env.
+	mergedEnv := make(map[string]string)
+	maps.Copy(mergedEnv, c.cfg.Env)
+	maps.Copy(mergedEnv, env)
+
+	ci, err := c.runCI(ctx, run.WorktreePath, mergedEnv)
 	if err != nil && c.cfg.RequireCIPass {
 		return nil, fmt.Errorf("CI failed: %w", err)
 	}
@@ -92,6 +100,10 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 	// 5. Merge agent-written metadata (pr_url, walkthrough, etc.).
 	readAgentMetadata(run.WorktreePath, bundle)
 
+	if err := validateIssuePublish(task, bundle, c.cfg.RequirePRForIssue, c.cfg.PublishMode); err != nil {
+		return nil, err
+	}
+
 	// 5a. If a PR was opened, mark it as needing QA review.
 	if bundle.PRUrl != "" && notifier != nil {
 		prNum := parsePRNumber(bundle.PRUrl)
@@ -118,6 +130,39 @@ func (c *Collector) Collect(ctx context.Context, run *domain.Run, task *domain.T
 	return bundle, nil
 }
 
+func validateIssuePublish(task *domain.Task, bundle *domain.ProofBundle, requirePR bool, publishMode string) error {
+	if !requirePR || task == nil || bundle == nil {
+		return nil
+	}
+	switch normalizePublishMode(publishMode) {
+	case "allowed", "skip":
+		return nil
+	}
+	if task.Type != "" && task.Type != domain.TaskTypeIssue {
+		return nil
+	}
+	if bundle.Diff.FilesChanged == 0 {
+		return nil
+	}
+	if strings.TrimSpace(bundle.PRUrl) == "" {
+		return fmt.Errorf("publish incomplete: missing pr_url in .ariadne/metadata.json")
+	}
+	return nil
+}
+
+func normalizePublishMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "required":
+		return "required"
+	case "allowed":
+		return "allowed"
+	case "skip":
+		return "skip"
+	default:
+		return "required"
+	}
+}
+
 // readAgentMetadata merges fields from .ariadne/metadata.json (written by the
 // agent) into bundle. Unknown fields are ignored; missing file is not an error.
 func readAgentMetadata(worktreePath string, bundle *domain.ProofBundle) {
@@ -142,7 +187,7 @@ func readAgentMetadata(worktreePath string, bundle *domain.ProofBundle) {
 }
 
 // runCI executes the test suite in the worktree directory.
-func (c *Collector) runCI(ctx context.Context, dir string) (domain.CIResult, error) {
+func (c *Collector) runCI(ctx context.Context, dir string, env map[string]string) (domain.CIResult, error) {
 	ciCmd := c.cfg.CICommand
 	if len(ciCmd) == 0 {
 		ciCmd = inferCICommand(dir)
@@ -153,6 +198,17 @@ func (c *Collector) runCI(ctx context.Context, dir string) (domain.CIResult, err
 
 	cmd := exec.CommandContext(ctx, ciCmd[0], ciCmd[1:]...)
 	cmd.Dir = dir
+	cmd.Env = os.Environ()
+
+	// Use provided env (which should already be merged by the caller) or
+	// fall back to global config env.
+	if len(env) == 0 {
+		env = c.cfg.Env
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -164,7 +220,10 @@ func (c *Collector) runCI(ctx context.Context, dir string) (domain.CIResult, err
 	if ciCmd[0] == "go" {
 		result.TestCount, result.Failures = parseTestOutput(out.String())
 	}
-	return result, err
+	if err != nil {
+		return result, fmt.Errorf("%w: %s", err, out.String())
+	}
+	return result, nil
 }
 
 // diffStats returns line-count statistics comparing the worktree HEAD to baseBranch.

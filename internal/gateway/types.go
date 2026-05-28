@@ -26,6 +26,7 @@ type Invocation struct {
 	Env         map[string]string // Additional env for this invocation.
 	Metadata    map[string]string // Free-form (source adapter, conversation ID, cron job ID, etc.).
 	Source      string            // e.g. "mcp", "discord", "cron", "cli" — for policy and observability.
+	SourceURL   string            // Optional URL from the originating system (issue, thread, etc.).
 	PublishMode string            // Optional override for proof publish behavior (if relevant).
 }
 

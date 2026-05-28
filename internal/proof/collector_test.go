@@ -12,7 +12,7 @@ import (
 
 func TestParseShortstat(t *testing.T) {
 	cases := []struct {
-		input      string
+		input           string
 		files, ins, del int
 	}{
 		{" 4 files changed, 87 insertions(+), 12 deletions(-)", 4, 87, 12},
@@ -111,7 +111,7 @@ func TestCollect_CostUSD_WithRate(t *testing.T) {
 	// rate = $1.00 per 1k tokens; 1000 tokens → $1.00
 	est := &stubEstimator{rate: 1.0}
 
-	bundle, err := c.Collect(context.Background(), run, task, est, nil)
+	bundle, err := c.Collect(context.Background(), run, task, nil, est, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestCollect_CostUSD_NoRate(t *testing.T) {
 	// rate = 0 → no estimate
 	est := &stubEstimator{rate: 0}
 
-	bundle, err := c.Collect(context.Background(), run, task, est, nil)
+	bundle, err := c.Collect(context.Background(), run, task, nil, est, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -177,11 +177,53 @@ func TestCollect_CostUSD_NilProvider(t *testing.T) {
 
 	c := New(Config{CICommand: []string{"true"}})
 
-	bundle, err := c.Collect(context.Background(), run, task, nil, nil)
+	bundle, err := c.Collect(context.Background(), run, task, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
 	if bundle.CostUSD != 0 {
 		t.Errorf("expected CostUSD = 0 with nil provider, got %f", bundle.CostUSD)
+	}
+}
+
+func TestValidateIssuePublish_RequiresPRWhenFilesChanged(t *testing.T) {
+	task := &domain.Task{ID: "t4", Type: domain.TaskTypeIssue}
+	bundle := &domain.ProofBundle{
+		Diff: domain.DiffStat{FilesChanged: 2},
+	}
+
+	if err := validateIssuePublish(task, bundle, true, "required"); err == nil {
+		t.Fatal("expected missing pr_url error")
+	}
+}
+
+func TestValidateIssuePublish_AllowsMissingPRWithoutChanges(t *testing.T) {
+	task := &domain.Task{ID: "t5", Type: domain.TaskTypeIssue}
+	bundle := &domain.ProofBundle{}
+
+	if err := validateIssuePublish(task, bundle, true, "required"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateIssuePublish_AllowsMissingPRWhenPublishAllowed(t *testing.T) {
+	task := &domain.Task{ID: "t6", Type: domain.TaskTypeIssue}
+	bundle := &domain.ProofBundle{
+		Diff: domain.DiffStat{FilesChanged: 2},
+	}
+
+	if err := validateIssuePublish(task, bundle, true, "allowed"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateIssuePublish_AllowsMissingPRWhenPublishSkipped(t *testing.T) {
+	task := &domain.Task{ID: "t7", Type: domain.TaskTypeIssue}
+	bundle := &domain.ProofBundle{
+		Diff: domain.DiffStat{FilesChanged: 2},
+	}
+
+	if err := validateIssuePublish(task, bundle, true, "skip"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
