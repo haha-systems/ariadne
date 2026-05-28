@@ -6,6 +6,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/policy"
 )
 
 // Invocation is the clean input to the gateway for starting a run.
@@ -90,14 +91,15 @@ type Gateway interface {
 // Config captures the static configuration the gateway needs from ariadne.toml
 // (plus any runtime overrides).
 type Config struct {
-	RepoRoot       string
-	Providers      map[string]config.ProviderConfig
-	Personas       map[string]config.PersonaConfig
+	RepoRoot        string
+	Providers       map[string]config.ProviderConfig
+	Personas        map[string]config.PersonaConfig
 	DefaultProvider string
-	Sandbox        config.SandboxConfig
-	Skills         map[string]config.SkillConfig
-	// PolicyFile is the path to the Starlark policy (if any).
-	PolicyFile string
+	Sandbox         config.SandboxConfig
+	Skills          map[string]config.SkillConfig
+	// Policy is the policy engine used for routing and hooks.
+	// If nil, a no-op engine is used (all decisions fall through to defaults).
+	Policy policy.Engine
 	// ResultHandlers are the built-in ones (more can be registered at runtime).
 	ResultHandlers []ResultHandler
 }

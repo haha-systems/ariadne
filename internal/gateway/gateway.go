@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/policy"
 )
 
 // gateway is the concrete implementation of Gateway for the spike.
@@ -20,7 +21,8 @@ type gateway struct {
 	runs      map[string]*Run
 	active    map[string]context.CancelFunc // for cancellation
 	handlers  []ResultHandler
-	executor  Executor // the thing that actually runs the agent (injected for testability)
+	executor  Executor      // the thing that actually runs the agent (injected for testability)
+	policy    policy.Engine // policy decisions (routing + hooks)
 }
 
 // Executor is the narrow seam for actually running an agent.
@@ -63,7 +65,13 @@ func New(cfg Config, exec Executor) (Gateway, error) {
 		active:   make(map[string]context.CancelFunc),
 		handlers: handlers,
 		executor: exec,
+		policy:   cfg.Policy,
 	}
+
+	if g.policy == nil {
+		g.policy = policy.NoopEngine{}
+	}
+
 	return g, nil
 }
 
@@ -83,8 +91,24 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 		Metadata:  copyMap(inv.Metadata),
 	}
 
-	// Trivial "routing" for the spike (real Starlark policy comes later).
-	// If no explicit provider, fall back to config default.
+	// === Policy-driven routing (Phase 3) ===
+	policyInv := toPolicyInvocation(inv)
+	decision, err := g.policy.SelectRoute(ctx, policyInv)
+	if err != nil {
+		return nil, fmt.Errorf("policy select_route failed: %w", err)
+	}
+
+	if decision != nil {
+		if decision.Provider != "" {
+			inv.Provider = decision.Provider
+		}
+		if decision.Persona != "" {
+			inv.Persona = decision.Persona
+		}
+		// Note: RaceProviders support can be added here later.
+	}
+
+	// Fallback to configured default if still not set
 	if inv.Provider == "" {
 		inv.Provider = g.cfg.DefaultProvider
 	}
@@ -247,4 +271,21 @@ func copyMap(m map[string]string) map[string]string {
 		cp[k] = v
 	}
 	return cp
+}
+
+// toPolicyInvocation converts a gateway.Invocation into the policy package's
+// own Invocation type. This keeps the policy layer decoupled.
+func toPolicyInvocation(inv Invocation) policy.Invocation {
+	return policy.Invocation{
+		ID:        inv.ID,
+		Title:     inv.Title,
+		Prompt:    inv.Prompt,
+		Labels:    append([]string(nil), inv.Labels...),
+		Provider:  inv.Provider,
+		Persona:   inv.Persona,
+		Routing:   inv.Routing,
+		Source:    inv.Source,
+		SourceURL: inv.SourceURL,
+		Metadata:  copyMap(inv.Metadata),
+	}
 }

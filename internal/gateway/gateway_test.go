@@ -12,6 +12,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/policy"
 )
 
 // fakeExecutor is a test double that does a small delay (simulating work)
@@ -256,5 +257,90 @@ func runGit(t *testing.T, dir string, args ...string) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+}
+
+// TestGateway_WithStarlarkPolicy proves that a real Starlark policy file can
+// influence provider selection when submitting through the gateway.
+func TestGateway_WithStarlarkPolicy(t *testing.T) {
+	repoRoot := t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	// Create a simple policy file
+	policyPath := filepath.Join(repoRoot, "policy.star")
+	policyContent := `
+def select_route(inv):
+    if "gemini-preferred" in inv["labels"]:
+        return "gemini"
+    return "sleeper"
+`
+	if err := os.WriteFile(policyPath, []byte(policyContent), 0644); err != nil {
+		t.Fatalf("write policy.star: %v", err)
+	}
+
+	cfg := &config.Config{
+		Ariadne: config.AriadneConfig{
+			DefaultProvider: "sleeper",
+		},
+		Sandbox: config.SandboxConfig{
+			WorktreeDir:       ".ariadne/runs",
+			TimeoutMinutes:    1,
+			PreserveOnFailure: true,
+		},
+		Providers: map[string]config.ProviderConfig{
+			"sleeper": {
+				Enabled:   true,
+				Binary:    "/bin/sh",
+				ExtraArgs: []string{"-c", "sleep 0.05; exit 0"},
+			},
+			"gemini": {
+				Enabled:   true,
+				Binary:    "/bin/sh",
+				ExtraArgs: []string{"-c", "sleep 0.05; exit 0"},
+			},
+		},
+		Personas: map[string]config.PersonaConfig{},
+	}
+
+	providers := BuildProvidersFromConfig(cfg)
+	sup := DefaultSupervisorForGateway(cfg, repoRoot)
+	exec := NewSupervisorExecutor(repoRoot, sup, providers, cfg.Personas)
+
+	// Load Starlark policy
+	pol, err := policy.NewStarlarkEngine(policyPath)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+
+	gw, err := New(Config{
+		RepoRoot:        repoRoot,
+		DefaultProvider: "sleeper",
+		Policy:          pol,
+	}, exec)
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	defer gw.Close()
+
+	// Submit with label that should trigger gemini via policy
+	run, err := gw.Submit(context.Background(), Invocation{
+		Title:  "policy test",
+		Prompt: "test",
+		Labels: []string{"gemini-preferred"},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Give it a moment to run
+	time.Sleep(120 * time.Millisecond)
+
+	got, err := gw.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+
+	if got.Provider != "gemini" {
+		t.Errorf("expected provider 'gemini' via policy, got %q", got.Provider)
 	}
 }
