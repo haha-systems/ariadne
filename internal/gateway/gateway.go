@@ -162,7 +162,7 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 		snapshot := g.copyRun(run.ID)
 		if snapshot != nil {
 			policyInv := toPolicyInvocation(inv)
-			summary := toPolicyRunSummary(snapshot)
+			summary := toPolicyRunSummary(snapshot, inv)
 			// Always call; the configured policy (or NoopEngine) decides what to do.
 			// Errors are best-effort logged by the engine implementation; we do not
 			// fail the run because of a post-run hook.
@@ -170,6 +170,18 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 
 			for _, h := range g.handlers {
 				_ = h.Handle(context.Background(), snapshot, &inv, nil)
+			}
+
+			// Propagate fields like ProofPath that handlers may have set on their
+			// snapshot copy back to the live Run (handlers are passed copies and
+			// the contract discourages mutating core state; this enables the
+			// documented "populated by result handlers" behavior for ProofPath).
+			if snapshot.ProofPath != "" {
+				g.updateRun(run.ID, func(r *Run) {
+					if r.ProofPath == "" {
+						r.ProofPath = snapshot.ProofPath
+					}
+				})
 			}
 		}
 	}()
@@ -301,7 +313,10 @@ func toPolicyInvocation(inv Invocation) policy.Invocation {
 
 // toPolicyRunSummary converts a completed gateway Run into the policy
 // RunSummary type used by PostRun hooks. Duration is computed safely.
-func toPolicyRunSummary(r *Run) policy.RunSummary {
+// Source and SourceURL are taken from the original Invocation (not the Run,
+// which does not carry them) so that policy.PostRun sees the same data that
+// ResultHandlers receive via their inv parameter.
+func toPolicyRunSummary(r *Run, inv Invocation) policy.RunSummary {
 	summary := policy.RunSummary{
 		ID:        r.ID,
 		Title:     r.Title,
@@ -310,8 +325,8 @@ func toPolicyRunSummary(r *Run) policy.RunSummary {
 		Status:    string(r.Status),
 		Worktree:  r.Worktree,
 		Error:     r.LastError,
-		Source:    "", // filled from original Invocation where available
-		SourceURL: "",
+		Source:    inv.Source,
+		SourceURL: inv.SourceURL,
 	}
 	if r.FinishedAt != nil {
 		summary.Duration = r.FinishedAt.Sub(r.StartedAt).Seconds()

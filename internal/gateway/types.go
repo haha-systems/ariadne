@@ -99,8 +99,9 @@ type Run struct {
 //
 // Built-in handlers provided by this package (see result_handlers.go):
 //   - LoggingResultHandler (always present by default).
-//   - ProofSummaryResultHandler (writes a minimal summary.json into the
-//     worktree's proof/ directory — useful baseline for direct/gateway runs).
+//   - ProofSummaryResultHandler (writes a minimal gateway_summary.json into the
+//     worktree's proof/ directory — useful baseline for direct/gateway runs;
+//     distinct from the richer proof/summary.json written by legacy collector).
 //   - WebhookResultHandler (configurable POST of a JSON payload on completion).
 //
 // Example (in an adapter):

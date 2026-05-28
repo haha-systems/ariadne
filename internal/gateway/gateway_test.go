@@ -423,6 +423,12 @@ func TestGateway_PostRunCalledBeforeHandlers(t *testing.T) {
 	if pol.lastRun.Status != string(domain.RunStatusSucceeded) {
 		t.Errorf("PostRun status = %s, want succeeded", pol.lastRun.Status)
 	}
+	if pol.lastRun.Source != "test-postrun" {
+		t.Errorf("PostRun run summary source = %q, want test-postrun", pol.lastRun.Source)
+	}
+	if pol.lastRun.SourceURL != "https://example.com/123" {
+		t.Errorf("PostRun run summary source_url = %q, want https://example.com/123", pol.lastRun.SourceURL)
+	}
 	if pol.lastInv.Source != "test-postrun" {
 		t.Errorf("PostRun inv source = %q", pol.lastInv.Source)
 	}
@@ -456,10 +462,10 @@ func TestProofSummaryResultHandler_WritesJSON(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	path := filepath.Join(worktree, "proof", "summary.json")
+	path := filepath.Join(worktree, "proof", gatewayProofSummaryFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("summary.json not written: %v", err)
+		t.Fatalf("%s not written: %v", gatewayProofSummaryFile, err)
 	}
 
 	var got map[string]any
@@ -474,6 +480,12 @@ func TestProofSummaryResultHandler_WritesJSON(t *testing.T) {
 	}
 	if got["source"] != "test" {
 		t.Errorf("source = %v", got["source"])
+	}
+
+	// Verify handler populates ProofPath on the provided *Run (as documented
+	// for result handlers to do for fields like ProofPath).
+	if run.ProofPath != path {
+		t.Errorf("ProofPath = %q, want %q", run.ProofPath, path)
 	}
 }
 

@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// gatewayProofSummaryFile is the filename (inside the run worktree's "proof/"
+// directory) written by ProofSummaryResultHandler. Chosen to be distinct from
+// the legacy collector's "summary.json" (which contains a rich domain.ProofBundle)
+// so consumers can reliably distinguish the minimal gateway format.
+const gatewayProofSummaryFile = "gateway_summary.json"
+
 // LoggingResultHandler is the default built-in ResultHandler.
 // It emits a structured log line at Info level on every terminal run.
 // It is automatically registered by gateway.New unless the caller
@@ -64,19 +70,20 @@ func (noopResultHandler) Handle(ctx context.Context, run *Run, inv *Invocation, 
 // =============================================================================
 
 // ProofSummaryResultHandler is a built-in handler that writes a minimal
-// summary.json file into the run's worktree "proof/" directory (creating the
-// directory if necessary).
+// gateway_summary.json file (see gatewayProofSummaryFile) into the run's
+// worktree "proof/" directory (creating the directory if necessary).
 //
 // This provides a lightweight, always-available proof artifact for direct
 // gateway runs and MCP usage, without the full CI/PR machinery of the legacy
-// operator's proof.Collector (which remains the path for worksource-driven runs).
+// operator's proof.Collector (which writes the richer proof/summary.json for
+// worksource-driven runs using the collector).
 //
 // The written file is intentionally simple and stable for scripts/adapters
 // to consume. It is best-effort: missing worktree or write failures are
 // surfaced as errors from Handle (gateway ignores them for the run itself).
 type ProofSummaryResultHandler struct{}
 
-// NewProofSummaryResultHandler returns a handler that writes proof/summary.json.
+// NewProofSummaryResultHandler returns a handler that writes proof/gateway_summary.json.
 func NewProofSummaryResultHandler() *ProofSummaryResultHandler {
 	return &ProofSummaryResultHandler{}
 }
@@ -122,10 +129,14 @@ func (h *ProofSummaryResultHandler) Handle(ctx context.Context, run *Run, inv *I
 		return fmt.Errorf("proof summary: marshal: %w", err)
 	}
 
-	path := filepath.Join(proofDir, "summary.json")
+	path := filepath.Join(proofDir, gatewayProofSummaryFile)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("proof summary: write %s: %w", path, err)
 	}
+	// Populate ProofPath on the snapshot so that the gateway can reflect it on
+	// the live Run (handlers receive copies; gateway propagates fields like this
+	// after the handler loop per the Run field contract).
+	run.ProofPath = path
 	return nil
 }
 
@@ -233,7 +244,7 @@ func (h *WebhookResultHandler) Handle(ctx context.Context, run *Run, inv *Invoca
 			"finished_at":      finished,
 			"duration_seconds": dur,
 			"error":            run.LastError,
-			"proof_path":       run.ProofPath, // may be empty for gateway runs today
+			"proof_path":       run.ProofPath, // populated when ProofSummaryResultHandler (or other) runs successfully
 		},
 		"invocation": map[string]any{
 			"source":     inv.Source,
