@@ -1,3 +1,36 @@
+// Package operator implements the legacy control plane.
+//
+// This is the original "operator" Service from the pre-gateway era. It powers
+// manual run starts (StartRun/CancelRun) and was historically associated with
+// the polling-driven orchestrator (`ariadne run` for GitHub/Linear sources).
+//
+// # Legacy Status
+//
+// This package is retained **only for backward compatibility** during the
+// gateway refactor (Phase 2+). It is not the recommended path for new code,
+// direct invocations, or agent-driven runs.
+//
+//   - The modern recommended path is internal/gateway (Gateway + Executor).
+//     See cmd/ariadne/mcp.go (post-Task A) which creates only a Gateway.
+//   - The `ariadne run` polling loop (worksource poller + GitHub/Linear) still
+//     uses duplicated manual wiring in cmd/ariadne/main.go:startOrchestrator.
+//     That too is legacy; operator.Service is the "service" half of the old
+//     manual control plane.
+//   - The mcpserver retains an Operator *Service field purely as a fallback
+//     during transition; current mcp.go never populates it.
+//
+// New callers should use gateway.BuildProvidersFromConfig,
+// gateway.DefaultSupervisorForGateway, and gateway.NewSupervisorExecutor
+// (with gateway.New) instead of constructing operator.Service directly.
+//
+// Where practical we delegate (provider construction now reuses the gateway
+// helper to eliminate the copy of build logic). Full delegation of StartRun
+// execution, routing, proof collection, and active-run tracking is left for
+// later extraction to avoid behavior changes in the legacy paths.
+//
+// The package will eventually be removed once all call sites (mainly tests
+// or any external direct usage of the Service) have migrated and the polling
+// path itself is modernized.
 package operator
 
 import (
@@ -14,6 +47,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/gateway"
 	"github.com/haha-systems/ariadne/internal/proof"
 	"github.com/haha-systems/ariadne/internal/provider"
 	"github.com/haha-systems/ariadne/internal/router"
@@ -56,6 +90,20 @@ type CancelRunOutput struct {
 	AlreadyCompleted bool   `json:"already_completed,omitempty"`
 }
 
+// Service is the legacy orchestrator service.
+//
+// It encapsulates the old control plane components for manual/direct starts
+// (StartRun + CancelRun with its own active-run tracking + manual worksource)
+// plus the proof collection path that lives outside the supervisor for the
+// polling/manual era.
+//
+// The router, proof collector, and manual source are legacy-specific and not
+// yet factored into the gateway. Cancellation tracking uses a simple mutex map.
+//
+// Deprecated: Prefer creating a gateway.Gateway (with SupervisorExecutor) for
+// all new usage, including MCP adapters. This type and its methods are kept
+// solely for any remaining direct callers or the mcpserver legacy fallback
+// (see internal/mcpserver/server.go). No new features will be added here.
 type Service struct {
 	cfg         *config.Config
 	repoRoot    string
@@ -71,8 +119,25 @@ type Service struct {
 	activeRuns  map[string]context.CancelFunc
 }
 
+// New constructs the legacy Service.
+//
+// It wires providers (now delegated), the legacy router (for StartRun routing),
+// a supervisor, proof collector (with legacy RequirePRForIssue=true), and the
+// manual worksource + per-run cancel tracking.
+//
+// Deprecated: Use gateway.New together with gateway.BuildProvidersFromConfig,
+// gateway.DefaultSupervisorForGateway (or your own supervisor), and
+// gateway.NewSupervisorExecutor instead. This constructor exists only for
+// backward compatibility. Its observable behavior for legacy callers is
+// unchanged.
+//
+// NOTE on partial delegation: we reuse gateway.BuildProvidersFromConfig to
+// eliminate the duplicated provider adapter construction logic. We do not yet
+// call DefaultSupervisorForGateway because this path manages its own runstate
+// store (to inject ARIADNE_RUN_STATE_PATH into globalEnv for legacy tasks).
+// The collector and manual source + active tracking are also legacy concerns.
 func New(cfg *config.Config, repoRoot string) (*Service, error) {
-	providers := buildProviders(cfg)
+	providers := gateway.BuildProvidersFromConfig(cfg)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no enabled providers configured")
 	}
@@ -126,6 +191,9 @@ func New(cfg *config.Config, repoRoot string) (*Service, error) {
 }
 
 func (s *Service) StartRun(ctx context.Context, input StartRunInput) (*StartRunOutput, error) {
+	// Legacy manual run start path. Uses the old router (not gateway policy engine)
+	// and the manual worksource. Proof collection happens post-execution here
+	// (outside supervisor) for compatibility with the pre-gateway era.
 	task, err := s.buildTask(input)
 	if err != nil {
 		return nil, err
@@ -192,6 +260,8 @@ func (s *Service) StartRun(ctx context.Context, input StartRunInput) (*StartRunO
 }
 
 func (s *Service) CancelRun(runID string) (*CancelRunOutput, error) {
+	// Legacy cancel path using the in-memory activeRuns map populated by StartRun.
+	// Gateway has its own equivalent cancellation tracking.
 	s.activeMu.Lock()
 	cancel, ok := s.activeRuns[runID]
 	s.activeMu.Unlock()
@@ -367,29 +437,10 @@ func mapsClone(src map[string]string) map[string]string {
 	return dst
 }
 
-func buildProviders(cfg *config.Config) map[string]provider.AgentProvider {
-	providers := make(map[string]provider.AgentProvider)
-	for name, pcfg := range cfg.Providers {
-		if !pcfg.Enabled {
-			continue
-		}
-		switch name {
-		case "claude":
-			providers[name] = provider.NewClaudeCodeAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		case "codex":
-			providers[name] = provider.NewCodexAdapter(pcfg.Binary, pcfg.ExtraArgs)
-		case "gemini":
-			providers[name] = provider.NewGeminiCLIAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		case "opencode":
-			providers[name] = provider.NewOpenCodeAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		default:
-			if pcfg.Binary != "" {
-				providers[name] = provider.NewCustomAdapter(name, pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-			}
-		}
-	}
-	return providers
-}
+// NOTE: buildProviders was removed here (2026-05) in favor of delegating to
+// gateway.BuildProvidersFromConfig. The old private implementation was an
+// exact duplicate of the logic now canonically maintained in the gateway
+// package (see supervisor_executor.go).
 
 func newRunID() string {
 	return fmt.Sprintf("run_%d", time.Now().UnixNano())
@@ -412,6 +463,9 @@ func normalizePublishMode(override, fallback string) string {
 	}
 }
 
+// WriteToolResult is a small helper historically used by the operator/manual
+// run tooling to write JSON results. It is part of the legacy surface and is
+// retained for compatibility. Prefer standard encoding/json in new code.
 func WriteToolResult(path string, payload any) error {
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

@@ -34,8 +34,12 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 			defer stop()
 
 			// Build the gateway (thin adapter path for direct/agent-driven MCP runs).
-			// No legacy operator.Service is created here; the old heavy path remains
-			// for the `ariadne run` poller and other commands (separate migration tasks).
+			// No legacy operator.Service is created here.
+			//
+			// The old heavy operator (internal/operator) and the duplicated wiring
+			// in cmd/ariadne/main.go:startOrchestrator are the legacy control plane,
+			// kept only for backward compatibility with the pre-gateway `ariadne run`
+			// polling path and any direct construction of operator.Service.
 			providers := gateway.BuildProvidersFromConfig(cfg)
 			sup := gateway.DefaultSupervisorForGateway(cfg, repoRoot())
 			exec := gateway.NewSupervisorExecutor(repoRoot(), sup, providers, cfg.Personas)
@@ -58,7 +62,8 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 				MCPPath:         mcpPath,
 				Gateway:         gw,
 				// Operator left nil: start_run/cancel_run now go exclusively through Gateway
-				// for this command (legacy fallback in mcpserver remains for other callers during transition).
+				// (the legacy Operator fallback in mcpserver remains only for
+				// hypothetical external callers still passing an *operator.Service).
 			}, mcpserver.Options{})
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Ariadne MCP listening on http://%s%s\n", listenAddr, normalizeMCPPath(mcpPath))

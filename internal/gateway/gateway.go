@@ -13,7 +13,8 @@ import (
 // gateway is the concrete implementation of Gateway for the spike.
 // It is intentionally minimal: it accepts invocations, does trivial routing
 // (or calls Starlark later), and delegates execution to an Executor.
-// This proves the seam before we do the big extraction from supervisor/operator.
+// This proves the seam before we do the big extraction from supervisor/operator
+// (the heavy legacy logic now clearly scoped in internal/operator).
 type gateway struct {
 	cfg Config
 

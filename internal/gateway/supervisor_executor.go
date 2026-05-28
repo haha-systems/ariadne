@@ -35,6 +35,10 @@ type SupervisorExecutor struct {
 // and provider/persona maps. The caller (usually the code that creates the
 // Gateway) is responsible for building the providers and supervisor with the
 // appropriate RunState, workflow file, etc.
+//
+// This bridges the legacy supervisor into the new gateway for Phase 2 without
+// duplicating execution logic. The old operator.Service has its own execution
+// wrapper for manual runs.
 func NewSupervisorExecutor(
 	repoRoot string,
 	sup *supervisor.Supervisor,
@@ -110,9 +114,13 @@ func (e *SupervisorExecutor) Execute(ctx context.Context, runID string, inv Invo
 	return worktree, nil
 }
 
-// BuildProvidersFromConfig is a small helper so callers don't have to copy the
-// buildProviders logic from main.go / operator. We can move the canonical
-// version later.
+// BuildProvidersFromConfig is the canonical helper for constructing enabled
+// providers from config. It was extracted so that the legacy copies in
+// cmd/ariadne/main.go and (formerly) internal/operator/service.go would not
+// need to be duplicated. The operator package now delegates to this function.
+//
+// This is the single source of truth for provider adapter wiring during the
+// transition. (See also DefaultSupervisorForGateway.)
 func BuildProvidersFromConfig(cfg *config.Config) map[string]provider.AgentProvider {
 	providers := make(map[string]provider.AgentProvider)
 	for name, pcfg := range cfg.Providers {
@@ -140,6 +148,9 @@ func BuildProvidersFromConfig(cfg *config.Config) map[string]provider.AgentProvi
 // DefaultSupervisorForGateway is a convenience that creates a Supervisor with
 // reasonable defaults for direct/gateway-driven runs (RunState enabled, etc.).
 // Callers can still create their own Supervisor and pass it to NewSupervisorExecutor.
+//
+// The legacy operator.Service creates its supervisor directly (with its own
+// runstate for globalEnv injection) rather than calling this helper.
 func DefaultSupervisorForGateway(cfg *config.Config, repoRoot string) *supervisor.Supervisor {
 	statePath := filepath.Join(repoRoot, cfg.Sandbox.WorktreeDir, "index.json")
 	runState := runstate.New(statePath)

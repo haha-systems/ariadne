@@ -38,8 +38,13 @@ type Config struct {
 	Skills          map[string]config.SkillConfig
 	ListenAddress   string
 	MCPPath         string
-	Operator        *operator.Service // legacy for transition
-	Gateway         gateway.Gateway // preferred new path for direct runs (MCP as adapter)
+	// Operator is the legacy control plane service (internal/operator).
+	// It is retained only for backward compatibility. The preferred path is
+	// Gateway (see mcp.go which never populates Operator anymore).
+	// The fallback logic in startRun/cancelRun below will be removable once
+	// all call sites are known to supply Gateway.
+	Operator *operator.Service // legacy for transition / fallback only
+	Gateway  gateway.Gateway   // preferred new path for direct runs (MCP as adapter)
 }
 
 type Options struct {
@@ -156,7 +161,7 @@ func (s *Server) Handler() http.Handler {
 
 	server.AddResource(&mcp.Resource{
 		Name:        "overview",
-		Description: "Overview of the Ariadne MCP operator plane and storage locations.",
+		Description: "Overview of the Ariadne MCP (legacy operator plane + gateway) and storage locations.",
 		MIMEType:    "application/json",
 		URI:         resourceOverview,
 	}, s.readOverview)
@@ -390,7 +395,9 @@ func (s *Server) startRun(ctx context.Context, req *mcp.CallToolRequest, input s
 		return toolResult("manual run started (via gateway)", false), out, nil
 	}
 
-	// Legacy path
+	// Legacy path (operator.Service). This is the old manual control plane.
+	// It is exercised only if a caller explicitly supplies Operator (current
+	// mcp command never does). See internal/operator for deprecation docs.
 	if s.cfg.Operator == nil {
 		return nil, startRunToolOutput{}, fmt.Errorf("neither gateway nor operator service is configured")
 	}
@@ -417,6 +424,7 @@ func (s *Server) cancelRun(ctx context.Context, req *mcp.CallToolRequest, input 
 	if s.cfg.Operator == nil {
 		return nil, cancelRunToolOutput{}, fmt.Errorf("neither gateway nor operator service is configured")
 	}
+	// Legacy operator cancel path (see comment on Operator field).
 	output, err := s.cfg.Operator.CancelRun(strings.TrimSpace(input.RunID))
 	if err != nil {
 		return nil, cancelRunToolOutput{}, err

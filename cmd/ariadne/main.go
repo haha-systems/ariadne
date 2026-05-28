@@ -206,6 +206,17 @@ func costCmd(cfgPath *string) *cobra.Command {
 }
 
 // startOrchestrator wires together all components and runs the main loop.
+//
+// This is the legacy polling control plane for GitHub/Linear-driven work
+// (the original `ariadne run` behavior). It manually duplicates provider
+// construction, router, supervisor, proof collector, and worksource wiring.
+//
+// Modern direct/agent-driven runs use the gateway (see cmd/ariadne/mcp.go and
+// internal/gateway). The duplicated build logic here (and historically in
+// internal/operator) is being reduced by gateway.BuildProvidersFromConfig etc.
+//
+// This path (and the operator package) are legacy-only for backward compat.
+// Future work will migrate the poller itself onto the gateway/executor seam.
 func startOrchestrator(ctx context.Context, cfg *config.Config) error {
 	// Build enabled providers.
 	providers := buildProviders(cfg)
@@ -559,6 +570,12 @@ func formatProofSummary(b *domain.ProofBundle) string {
 	return "```json\n" + string(data) + "\n```"
 }
 
+// buildProviders constructs enabled agent providers from config.
+//
+// This is legacy duplication (see also the removed buildProviders in
+// internal/operator). New code should use gateway.BuildProvidersFromConfig
+// (the canonical extraction). This copy is retained here unchanged to avoid
+// any behavior shift in the legacy `ariadne run` polling path.
 func buildProviders(cfg *config.Config) map[string]provider.AgentProvider {
 	providers := make(map[string]provider.AgentProvider)
 	for name, pcfg := range cfg.Providers {
