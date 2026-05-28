@@ -12,7 +12,6 @@ import (
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/gateway"
 	"github.com/haha-systems/ariadne/internal/mcpserver"
-	"github.com/haha-systems/ariadne/internal/operator"
 )
 
 func mcpCmd(cfgPath *string) *cobra.Command {
@@ -21,7 +20,7 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Serve Ariadne's MCP operator plane over local streamable HTTP",
+		Short: "Serve Ariadne's MCP gateway adapter over local streamable HTTP",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_ = godotenv.Load()
 			cfg, err := config.Load(*cfgPath)
@@ -34,7 +33,9 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			// Build the new gateway control plane (preferred path).
+			// Build the gateway (thin adapter path for direct/agent-driven MCP runs).
+			// No legacy operator.Service is created here; the old heavy path remains
+			// for the `ariadne run` poller and other commands (separate migration tasks).
 			providers := gateway.BuildProvidersFromConfig(cfg)
 			sup := gateway.DefaultSupervisorForGateway(cfg, repoRoot())
 			exec := gateway.NewSupervisorExecutor(repoRoot(), sup, providers, cfg.Personas)
@@ -47,12 +48,6 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 				return fmt.Errorf("create gateway: %w", err)
 			}
 
-			// Also create legacy operator for now (transition / other tools that still need it).
-			operatorSvc, err := operator.New(cfg, repoRoot())
-			if err != nil {
-				return err
-			}
-
 			server := mcpserver.New(mcpserver.Config{
 				RepoRoot:        repoRoot(),
 				WorktreeDir:     cfg.Sandbox.WorktreeDir,
@@ -61,8 +56,9 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 				Skills:          cfg.Skills,
 				ListenAddress:   listenAddr,
 				MCPPath:         mcpPath,
-				Operator:        operatorSvc,
 				Gateway:         gw,
+				// Operator left nil: start_run/cancel_run now go exclusively through Gateway
+				// for this command (legacy fallback in mcpserver remains for other callers during transition).
 			}, mcpserver.Options{})
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Ariadne MCP listening on http://%s%s\n", listenAddr, normalizeMCPPath(mcpPath))

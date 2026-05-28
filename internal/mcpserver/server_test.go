@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ariadne/internal/config"
-	"github.com/haha-systems/ariadne/internal/operator"
+	"github.com/haha-systems/ariadne/internal/gateway"
 	"github.com/haha-systems/ariadne/internal/runstate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -142,10 +142,19 @@ func TestServerStartAndCancelRunTools(t *testing.T) {
 		Personas: map[string]config.PersonaConfig{},
 	}
 
-	operatorSvc, err := operator.New(cfg, repoRoot)
+	// Use the modern Gateway path (mirrors cmd/ariadne/mcp.go construction).
+	providers := gateway.BuildProvidersFromConfig(cfg)
+	sup := gateway.DefaultSupervisorForGateway(cfg, repoRoot)
+	exec := gateway.NewSupervisorExecutor(repoRoot, sup, providers, cfg.Personas)
+
+	gw, err := gateway.New(gateway.Config{
+		RepoRoot:        repoRoot,
+		DefaultProvider: cfg.Ariadne.DefaultProvider,
+	}, exec)
 	if err != nil {
-		t.Fatalf("create operator service: %v", err)
+		t.Fatalf("create gateway: %v", err)
 	}
+	defer gw.Close()
 
 	server := New(Config{
 		RepoRoot:        repoRoot,
@@ -154,7 +163,8 @@ func TestServerStartAndCancelRunTools(t *testing.T) {
 		MemoryStorePath: filepath.Join(repoRoot, ".ariadne", "memory.json"),
 		ListenAddress:   "127.0.0.1:7619",
 		MCPPath:         "/mcp",
-		Operator:        operatorSvc,
+		Gateway:         gw,
+		// Operator deliberately nil to exercise the preferred gateway adapter path for start_run/cancel_run.
 	}, Options{})
 
 	httpServer := httptest.NewServer(server.Handler())
