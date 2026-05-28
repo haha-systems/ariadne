@@ -88,6 +88,32 @@ type Gateway interface {
 	Close() error
 }
 
+// Adapter is the minimal lifecycle interface for any input adapter that
+// submits work to the central Ariadne Gateway (via gw.Submit, RegisterResultHandler, etc.).
+//
+// Adapters are thin translation layers: they map external events (MCP tool calls,
+// chat messages, cron ticks, webhooks, ...) into gateway.Invocation values and
+// feed the single shared Gateway. All policy, execution, and result handling
+// lives in the Gateway.
+//
+// The interface is defined here (in the gateway package) because this package
+// is the logical consumer/owner of the "adapter" abstraction. Per project
+// convention, interfaces are defined in the consuming package, not in the
+// package that provides concrete implementations (such as internal/adapters).
+//
+// See internal/adapters for the CronAdapter and CommsStub spikes (and
+// FakeTransport) that implement Adapter, plus extensive documentation of the
+// multi-adapter pattern.
+type Adapter interface {
+	// Start begins the adapter's work. It must return quickly; background
+	// activity runs in goroutines. Implementations should respect ctx
+	// cancellation for shutdown.
+	Start(ctx context.Context) error
+
+	// Stop requests a clean shutdown. Implementations must be idempotent.
+	Stop() error
+}
+
 // Config captures the static configuration the gateway needs from ariadne.toml
 // (plus any runtime overrides).
 type Config struct {

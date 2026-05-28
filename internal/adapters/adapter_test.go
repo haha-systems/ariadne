@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/domain"
 	"github.com/haha-systems/ariadne/internal/gateway"
+	"github.com/haha-systems/ariadne/internal/mcpserver"
 )
 
 // fakeGateway is a minimal test double for gateway.Gateway used by the
@@ -317,4 +319,79 @@ func TestCommsStub_MultipleMessagesAndReplies(t *testing.T) {
 
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+// testExecutor is a minimal gateway.Executor for the multi-adapter wiring
+// demonstration test below. (The wiring test only needs construction +
+// Start/Stop of adapters; no actual agent execution occurs.)
+type testExecutor struct{}
+
+func (testExecutor) Execute(ctx context.Context, runID string, inv gateway.Invocation) (string, error) {
+	return "", nil
+}
+
+// TestMultiAdapterCoWiring is the small self-contained example added for
+// spec compliance (reviewer issue #3). It imports the *real* mcpserver and
+// adapters packages and wires one real gateway.Gateway to:
+//   - the production MCP server (as adapter)
+//   - CronAdapter spike
+//   - CommsStub (CommsAdapter spike)
+//
+// Only construction and Start() on the spikes are performed (no blocking
+// ListenAndServe, no long-running ticks). This proves at the code level
+// that "MCP + spikes" are peers sharing the Gateway.
+func TestMultiAdapterCoWiring(t *testing.T) {
+	gw, err := gateway.New(gateway.Config{
+		DefaultProvider: "fake",
+	}, testExecutor{})
+	if err != nil {
+		t.Fatalf("gateway.New: %v", err)
+	}
+	defer gw.Close()
+
+	tmp := t.TempDir()
+
+	// The real MCP server (the existing adapter path in cmd/ariadne/mcp.go).
+	mcp := mcpserver.New(mcpserver.Config{
+		RepoRoot:        tmp,
+		WorktreeDir:     filepath.Join(tmp, "worktrees"),
+		RunStatePath:    filepath.Join(tmp, "runstate.jsonl"),
+		MemoryStorePath: filepath.Join(tmp, "memory.db"),
+		Skills:          nil,
+		ListenAddress:   "127.0.0.1:0",
+		MCPPath:         "/mcp",
+		Gateway:         gw,
+		// Operator left nil to use the Gateway path.
+	}, mcpserver.Options{})
+	if mcp == nil {
+		t.Fatal("mcpserver.New returned nil")
+	}
+
+	// The Phase 2 Task E spikes, wired to the identical Gateway.
+	cron := NewCronAdapter(gw, time.Hour) // long: guarantees no tick during test
+	if cron == nil {
+		t.Fatal("NewCronAdapter returned nil")
+	}
+
+	transport := NewFakeTransport()
+	comms := NewCommsStub(gw, transport)
+	if comms == nil {
+		t.Fatal("NewCommsStub returned nil")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cron.Start(ctx); err != nil {
+		t.Fatalf("cron.Start: %v", err)
+	}
+	defer func() { _ = cron.Stop() }()
+
+	if err := comms.Start(ctx); err != nil {
+		t.Fatalf("comms.Start: %v", err)
+	}
+	defer func() { _ = comms.Stop() }()
+
+	// All wired and started successfully against one gw.
+	_ = mcp
 }

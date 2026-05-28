@@ -89,7 +89,7 @@ func (t *FakeTransport) Close() {
 }
 
 // CommsStub is the skeleton implementation of a Discord/Signal-style
-// bidirectional communications adapter.
+// bidirectional communications adapter (satisfies CommsAdapter).
 //
 // It is a complete, runnable, self-contained demonstration (with the
 // FakeTransport) showing the full round-trip:
@@ -130,13 +130,13 @@ func NewCommsStub(gw gateway.Gateway, transport *FakeTransport) *CommsStub {
 	}
 }
 
-// Start implements Adapter. It registers the reply ResultHandler (once) and
+// Start implements gateway.Adapter / CommsAdapter. It registers the reply ResultHandler (once) and
 // launches the inbound message pump.
 func (c *CommsStub) Start(ctx context.Context) error {
 	c.mu.Lock()
 	if c.stopped {
 		c.mu.Unlock()
-		return fmt.Errorf("comms stub: already stopped")
+		return fmt.Errorf("comms stub: %w", ErrAlreadyStopped)
 	}
 	if !c.handlerRegistered {
 		c.gw.RegisterResultHandler(c.replyHandler())
@@ -156,7 +156,7 @@ func (c *CommsStub) Start(ctx context.Context) error {
 // where) to reply. In a real adapter the logic would be richer (e.g. only
 // reply on success, include proof URL, respect user mention style, etc.).
 func (c *CommsStub) replyHandler() gateway.ResultHandler {
-	return ResultHandlerFunc(func(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error {
+	return resultHandlerFunc(func(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error {
 		if inv == nil || inv.Source != "comms" {
 			return nil // not ours
 		}
@@ -217,7 +217,7 @@ func (c *CommsStub) pump(parentCtx context.Context) {
 	}
 }
 
-// Stop implements Adapter.
+// Stop implements Adapter (idempotent).
 func (c *CommsStub) Stop() error {
 	c.mu.Lock()
 	if c.stopped {
@@ -242,15 +242,16 @@ func (c *CommsStub) SentReplies() <-chan FakeReply {
 	return c.transport.SentReplies()
 }
 
-// Ensure CommsStub satisfies Adapter (compile-time check).
+// Ensure CommsStub satisfies Adapter and CommsAdapter (compile-time checks).
 var _ Adapter = (*CommsStub)(nil)
+var _ CommsAdapter = (*CommsStub)(nil)
 
-// ResultHandlerFunc is a tiny adapter type so we can use a plain func as a
-// ResultHandler inside the spike (avoids needing a separate type in the
-// gateway package for this demo). It satisfies gateway.ResultHandler.
-type ResultHandlerFunc func(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error
+// resultHandlerFunc is an unexported tiny adapter type (spike-internal only)
+// so we can use a plain func as a ResultHandler inside the comms stub demo.
+// It satisfies gateway.ResultHandler. (Unexported per spec compliance review.)
+type resultHandlerFunc func(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error
 
-func (f ResultHandlerFunc) Handle(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error {
+func (f resultHandlerFunc) Handle(ctx context.Context, run *gateway.Run, inv *gateway.Invocation, outcome any) error {
 	if f == nil {
 		return nil
 	}

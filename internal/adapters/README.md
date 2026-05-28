@@ -22,16 +22,18 @@ This is the concrete payoff of Phase 2 (Tasks A–E):
 
 Adding a new source never requires forking execution logic or duplicating the policy engine.
 
-## The Adapter Interface
+## The Adapter and CommsAdapter Interfaces
 
 ```go
-type Adapter interface {
-    Start(ctx context.Context) error
-    Stop() error
-}
+// Defined in gateway package (per convention: interfaces in the consuming
+// package). adapters exports them as type aliases for convenience.
+type Adapter = gateway.Adapter
+type CommsAdapter = Adapter
 ```
 
-(See `adapter.go` for the full godoc and rationale on interface placement.)
+(See `adapter.go` and `gateway/types.go` for the full godoc, the authoritative
+definition of Adapter, and the CommsAdapter alias introduced to match the
+Task E spec wording: "Create a `CommsAdapter` skeleton: define an interface...")
 
 Construction always takes the `gateway.Gateway` (and adapter-specific deps such as a transport or interval). Start/Stop manage the adapter's own goroutines. No globals, explicit dependencies only.
 
@@ -59,7 +61,7 @@ No job storage, no cron expression parser, no persistence. Purely architectural.
 
 - `InjectMessage(...)` simulates inbound platform events.
 - The stub maps them to Invocations carrying `comms_*` metadata for correlation.
-- It registers a `ResultHandler` (using the tiny local `ResultHandlerFunc` helper) that turns completed runs back into `FakeReply` values on the transport.
+- It registers a `ResultHandler` (using a tiny local unexported func adapter helper) that turns completed runs back into `FakeReply` values on the transport.
 - Tests can drive the whole round-trip without any network or real SDK.
 
 This is the strongest proof that the reply path (one of the key deliverables of Task D) works for *any* adapter that chooses to register a handler.
@@ -109,7 +111,7 @@ See `*_test.go` files in this package. They use minimal `fakeGateway` doubles (n
 
 ## Follow-up Ideas (for later phases)
 
-- Promote useful helpers (e.g. a more complete `ResultHandlerFunc`, correlation utilities) into `gateway` or a shared `internal/adapterutil`.
+- Promote useful helpers (e.g. a reusable func-to-ResultHandler adapter, correlation utilities) into `gateway` or a shared `internal/adapterutil`.
 - Make `Gateway` optionally own a set of `Adapter`s with `RegisterAdapter` + shutdown coordination.
 - Extract the MCP server bits that only do "map to Invocation + Submit" into a reusable `MCPAdapter` type that also satisfies `adapters.Adapter`.
 - Real cron adapter with pluggable job specs + memory-backed last-fire tracking.

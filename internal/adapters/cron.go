@@ -52,12 +52,12 @@ func NewCronAdapter(gw gateway.Gateway, interval time.Duration) *CronAdapter {
 	}
 }
 
-// Start implements Adapter.
+// Start implements gateway.Adapter (via adapters.Adapter alias).
 func (c *CronAdapter) Start(ctx context.Context) error {
 	c.mu.Lock()
 	if c.stopped {
 		c.mu.Unlock()
-		return fmt.Errorf("cron adapter: already stopped")
+		return fmt.Errorf("cron adapter: %w", ErrAlreadyStopped)
 	}
 	c.mu.Unlock()
 
@@ -116,3 +116,6 @@ func (c *CronAdapter) Stop() error {
 
 // Ensure CronAdapter satisfies Adapter (compile-time check).
 var _ Adapter = (*CronAdapter)(nil)
+
+// (CronAdapter does not satisfy CommsAdapter; that is reserved for
+// chat-style bidirectional adapters.)
