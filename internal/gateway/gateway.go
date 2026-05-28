@@ -17,12 +17,12 @@ import (
 type gateway struct {
 	cfg Config
 
-	mu        sync.Mutex
-	runs      map[string]*Run
-	active    map[string]context.CancelFunc // for cancellation
-	handlers  []ResultHandler
-	executor  Executor      // the thing that actually runs the agent (injected for testability)
-	policy    policy.Engine // policy decisions (routing + hooks)
+	mu       sync.Mutex
+	runs     map[string]*Run
+	active   map[string]context.CancelFunc // for cancellation
+	handlers []ResultHandler
+	executor Executor      // the thing that actually runs the agent (injected for testability)
+	policy   policy.Engine // policy decisions (routing + hooks)
 }
 
 // Executor is the narrow seam for actually running an agent.
@@ -156,9 +156,18 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 			r.FinishedAt = &finished
 		})
 
-		// Snapshot for handlers (they must not mutate the live record).
+		// Snapshot for policy.PostRun and ResultHandlers (they must not mutate
+		// the live record). Per the documented contract, PostRun is invoked first
+		// (additively), then all registered handlers.
 		snapshot := g.copyRun(run.ID)
 		if snapshot != nil {
+			policyInv := toPolicyInvocation(inv)
+			summary := toPolicyRunSummary(snapshot)
+			// Always call; the configured policy (or NoopEngine) decides what to do.
+			// Errors are best-effort logged by the engine implementation; we do not
+			// fail the run because of a post-run hook.
+			_ = g.policy.PostRun(context.Background(), summary, policyInv)
+
 			for _, h := range g.handlers {
 				_ = h.Handle(context.Background(), snapshot, &inv, nil)
 			}
@@ -288,4 +297,24 @@ func toPolicyInvocation(inv Invocation) policy.Invocation {
 		SourceURL: inv.SourceURL,
 		Metadata:  copyMap(inv.Metadata),
 	}
+}
+
+// toPolicyRunSummary converts a completed gateway Run into the policy
+// RunSummary type used by PostRun hooks. Duration is computed safely.
+func toPolicyRunSummary(r *Run) policy.RunSummary {
+	summary := policy.RunSummary{
+		ID:        r.ID,
+		Title:     r.Title,
+		Provider:  r.Provider,
+		Persona:   r.Persona,
+		Status:    string(r.Status),
+		Worktree:  r.Worktree,
+		Error:     r.LastError,
+		Source:    "", // filled from original Invocation where available
+		SourceURL: "",
+	}
+	if r.FinishedAt != nil {
+		summary.Duration = r.FinishedAt.Sub(r.StartedAt).Seconds()
+	}
+	return summary
 }

@@ -55,7 +55,11 @@ func (e *StarlarkEngine) SelectRoute(ctx context.Context, inv Invocation) (*Rout
 	return parseRouteDecision(res)
 }
 
-// PreRun and PostRun are not yet implemented for Starlark in this step.
+// PreRun and PostRun are currently no-ops for StarlarkEngine.
+// Phase 3 will add support for pre_run(inv) and post_run(summary, inv) functions
+// in the policy script. Until then, any post-run policy logic must be
+// implemented in Go (custom Engine) or via registered ResultHandlers.
+// The gateway now reliably calls PostRun on whatever Engine is configured.
 func (e *StarlarkEngine) PreRun(ctx context.Context, inv *Invocation) error {
 	return nil
 }

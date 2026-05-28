@@ -53,18 +53,74 @@ type Run struct {
 	Metadata    map[string]string
 }
 
-// ResultHandler is called by the gateway (or via Starlark policy) after a run
-// reaches a terminal state. This is the extension point for "what happens next"
-// (write proof, post to Discord, open PR, call webhook, etc.).
-// Implementations must be safe for concurrent calls.
+// ResultHandler is the primary extension point for reacting to completed runs.
+//
+// The gateway invokes every registered ResultHandler (in registration order,
+// though order is not guaranteed to be stable across runs) after a run
+// reaches a terminal state (succeeded/failed/cancelled). It is called from
+// the internal async goroutine that drove execution.
+//
+// Relationship to policy.Engine.PostRun:
+//   - The gateway ALWAYS calls policy.PostRun first (if a non-nil policy was
+//     provided at construction; NoopEngine is a safe no-op).
+//   - Then it calls all ResultHandlers.
+//   - Both mechanisms are additive. PostRun is for *policy* concerns (learning,
+//     metrics, global side effects). ResultHandlers are for *result delivery*
+//     (proof artifacts, notifications to the originating system, webhooks,
+//     updating external trackers).
+//   - Future Starlark post_run (Phase 3) will be surfaced via a StarlarkEngine's
+//     PostRun; it will not directly replace or bypass ResultHandlers.
+//
+// Intended usage for adapters (MCP server today, Discord/Signal/cron/CLI tomorrow):
+//   - An adapter constructs a Gateway (often via New with a SupervisorExecutor).
+//   - It may pass one or more ResultHandlers in Config.ResultHandlers (they
+//     become the initial set, plus the automatic LoggingResultHandler unless
+//     a noopResultHandler is explicitly provided).
+//   - It may call gw.RegisterResultHandler(...) at any time for additional
+//     per-adapter handlers (e.g. a DiscordResultHandler that posts a message
+//     containing the run summary and proof path back to the thread/channel
+//     identified via inv.Metadata["discord_thread_id"]).
+//   - The adapter's handler receives a *snapshot* copy of the Run and the
+//     original Invocation; it must not mutate them.
+//   - The 'outcome' parameter is currently unused (always nil) but reserved
+//     for richer executor return values in the future.
+//
+// How to implement a new handler (easy for future developers):
+//  1. Define a struct implementing Handle (must be concurrency-safe; use
+//     internal locking if you mutate your own state).
+//  2. Provide a constructor (e.g. NewMyHandler(...) *MyHandler).
+//  3. Optionally support functional options for configuration (timeouts, etc.).
+//  4. In Handle, do your work (write files, HTTP calls, etc.). Return error
+//     only for hard failures; the gateway currently ignores handler errors
+//     (best-effort semantics).
+//  5. Register via Config at New time or gw.RegisterResultHandler later.
+//  6. Document any metadata keys your handler expects in the Invocation
+//     (e.g. "webhook_url", "callback_id").
+//
+// Built-in handlers provided by this package (see result_handlers.go):
+//   - LoggingResultHandler (always present by default).
+//   - ProofSummaryResultHandler (writes a minimal summary.json into the
+//     worktree's proof/ directory — useful baseline for direct/gateway runs).
+//   - WebhookResultHandler (configurable POST of a JSON payload on completion).
+//
+// Example (in an adapter):
+//
+//	h := gateway.NewWebhookResultHandler("https://example.com/cb", gateway.WithWebhookTimeout(5*time.Second))
+//	gw, _ := gateway.New(cfg, exec)  // cfg may also contain initial handlers
+//	gw.RegisterResultHandler(h)
+//
+// Implementations live in the same package today for simplicity; external
+// adapters just satisfy the interface.
 type ResultHandler interface {
 	Handle(ctx context.Context, run *Run, inv *Invocation, outcome any) error
 }
 
 // Gateway is the central control plane. All adapters (MCP, Discord, Signal, cron,
 // CLI direct, legacy poller, etc.) go through this interface.
-// The gateway owns routing (Starlark), execution, cancellation, and basic
-// observability. It does not know which adapter originated the work.
+// The gateway owns routing (via policy), execution (via injected Executor),
+// cancellation, and post-run result delivery (via policy.PostRun + ResultHandlers).
+// It does not know which adapter originated the work — that information lives
+// in Invocation.Source / Metadata and is used by handlers and policy.
 type Gateway interface {
 	// Submit validates the invocation (via policy if configured), routes it,
 	// prepares the workspace, launches the agent, and returns immediately.
@@ -80,8 +136,11 @@ type Gateway interface {
 	// ListRuns returns recent runs (implementation-defined ordering and limits).
 	ListRuns(limit int) ([]*Run, error)
 
-	// RegisterResultHandler adds a handler that will be invoked on terminal runs.
-	// Order is not guaranteed; handlers must be idempotent where it matters.
+	// RegisterResultHandler adds a handler that will be invoked on terminal runs
+	// (after policy.PostRun, in addition to any handlers supplied at construction).
+	// Order of invocation is the order of registration but is not guaranteed
+	// across different runs; handlers must be safe for concurrent use and
+	// should be idempotent for their side effects where possible.
 	RegisterResultHandler(h ResultHandler)
 
 	// Close stops background work (if any) and releases resources.
@@ -100,6 +159,10 @@ type Config struct {
 	// Policy is the policy engine used for routing and hooks.
 	// If nil, a no-op engine is used (all decisions fall through to defaults).
 	Policy policy.Engine
-	// ResultHandlers are the built-in ones (more can be registered at runtime).
+	// ResultHandlers are optional handlers supplied at construction time.
+	// The gateway automatically ensures a LoggingResultHandler is present
+	// unless the caller explicitly includes a noopResultHandler (advanced).
+	// Additional handlers can be registered later via RegisterResultHandler.
+	// See ResultHandler godoc for the full adapter + extensibility model.
 	ResultHandlers []ResultHandler
 }

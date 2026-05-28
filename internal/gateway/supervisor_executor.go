@@ -94,11 +94,11 @@ func (e *SupervisorExecutor) Execute(ctx context.Context, runID string, inv Invo
 	}
 
 	req := supervisor.RunRequest{
-		Run:      domRun,
-		Task:     task,
-		Provider: p,
+		Run:       domRun,
+		Task:      task,
+		Provider:  p,
 		GlobalEnv: map[string]string{},
-		Persona: persona,
+		Persona:   persona,
 	}
 
 	result := e.sup.Execute(ctx, req)
@@ -153,5 +153,3 @@ func DefaultSupervisorForGateway(cfg *config.Config, repoRoot string) *superviso
 		WorkflowFile:      cfg.Sandbox.WorkflowFile,
 	})
 }
-
-

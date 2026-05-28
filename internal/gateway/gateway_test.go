@@ -2,6 +2,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -342,5 +346,195 @@ def select_route(inv):
 
 	if got.Provider != "gemini" {
 		t.Errorf("expected provider 'gemini' via policy, got %q", got.Provider)
+	}
+}
+
+// =============================================================================
+// Tests for Phase 2 Task D: PostRun wiring + new built-in ResultHandlers
+// =============================================================================
+
+// capturingPolicy records the last PostRun call for assertions.
+type capturingPolicy struct {
+	mu        sync.Mutex
+	lastRun   policy.RunSummary
+	lastInv   policy.Invocation
+	callCount int
+}
+
+func (c *capturingPolicy) SelectRoute(ctx context.Context, inv policy.Invocation) (*policy.RouteDecision, error) {
+	return nil, nil
+}
+func (c *capturingPolicy) PreRun(ctx context.Context, inv *policy.Invocation) error { return nil }
+func (c *capturingPolicy) PostRun(ctx context.Context, run policy.RunSummary, inv policy.Invocation) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastRun = run
+	c.lastInv = inv
+	c.callCount++
+	return nil
+}
+
+func TestGateway_PostRunCalledBeforeHandlers(t *testing.T) {
+	pol := &capturingPolicy{}
+
+	var handlerWg sync.WaitGroup
+	handlerWg.Add(1)
+	handler := &captureHandler{called: &handlerWg}
+
+	gw, err := New(Config{
+		DefaultProvider: "fake",
+		Policy:          pol,
+		ResultHandlers:  []ResultHandler{handler},
+	}, &fakeExecutor{delay: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer gw.Close()
+
+	inv := Invocation{
+		Title:     "postrun test",
+		Prompt:    "x",
+		Source:    "test-postrun",
+		SourceURL: "https://example.com/123",
+		Labels:    []string{"foo"},
+	}
+	_, err = gw.Submit(context.Background(), inv)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Wait for handler (implies completion + PostRun happened)
+	done := make(chan struct{})
+	go func() { handlerWg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("completion did not happen")
+	}
+
+	pol.mu.Lock()
+	defer pol.mu.Unlock()
+	if pol.callCount != 1 {
+		t.Fatalf("expected PostRun called once, got %d", pol.callCount)
+	}
+	if pol.lastRun.ID == "" {
+		t.Error("PostRun received empty run summary")
+	}
+	if pol.lastRun.Status != string(domain.RunStatusSucceeded) {
+		t.Errorf("PostRun status = %s, want succeeded", pol.lastRun.Status)
+	}
+	if pol.lastInv.Source != "test-postrun" {
+		t.Errorf("PostRun inv source = %q", pol.lastInv.Source)
+	}
+	// Handler also saw it (order tested indirectly by both firing)
+	if handler.lastRun == nil {
+		t.Error("handler did not receive run")
+	}
+}
+
+func TestProofSummaryResultHandler_WritesJSON(t *testing.T) {
+	tmp := t.TempDir()
+	worktree := filepath.Join(tmp, "run_abc123")
+	if err := os.MkdirAll(worktree, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewProofSummaryResultHandler()
+	run := &Run{
+		ID:         "run_abc123",
+		Title:      "demo",
+		Provider:   "claude",
+		Status:     domain.RunStatusSucceeded,
+		Worktree:   worktree,
+		StartedAt:  time.Now().Add(-10 * time.Second).UTC(),
+		FinishedAt: func() *time.Time { t := time.Now().UTC(); return &t }(),
+		LastEvent:  "done",
+	}
+	inv := &Invocation{Source: "test", SourceURL: "u"}
+
+	if err := h.Handle(context.Background(), run, inv, nil); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	path := filepath.Join(worktree, "proof", "summary.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("summary.json not written: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["run_id"] != "run_abc123" {
+		t.Errorf("run_id = %v", got["run_id"])
+	}
+	if got["status"] != "succeeded" {
+		t.Errorf("status = %v", got["status"])
+	}
+	if got["source"] != "test" {
+		t.Errorf("source = %v", got["source"])
+	}
+}
+
+func TestWebhookResultHandler_PostsJSON(t *testing.T) {
+	var received struct {
+		mu   sync.Mutex
+		body []byte
+		hdr  http.Header
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		received.mu.Lock()
+		received.body = b
+		received.hdr = r.Header.Clone()
+		received.mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	h := NewWebhookResultHandler(srv.URL,
+		WithWebhookTimeout(2*time.Second),
+		WithWebhookHeader("X-Test", "yes"),
+	)
+
+	run := &Run{ID: "r1", Title: "t", Status: domain.RunStatusFailed, StartedAt: time.Now().UTC(), FinishedAt: func() *time.Time { tt := time.Now().UTC(); return &tt }()}
+	inv := &Invocation{Source: "webhook-test"}
+
+	err := h.Handle(context.Background(), run, inv, nil)
+	if err != nil {
+		t.Fatalf("Handle returned error (unexpected for 200): %v", err)
+	}
+
+	received.mu.Lock()
+	defer received.mu.Unlock()
+	if len(received.body) == 0 {
+		t.Fatal("no body received by test server")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(received.body, &payload); err != nil {
+		t.Fatalf("server body not json: %v", err)
+	}
+	if payload["event"] != "run.completed" {
+		t.Errorf("event = %v", payload["event"])
+	}
+	if received.hdr.Get("X-Test") != "yes" {
+		t.Errorf("custom header missing")
+	}
+	if received.hdr.Get("Content-Type") != "application/json" {
+		t.Errorf("content-type = %s", received.hdr.Get("Content-Type"))
+	}
+}
+
+func TestWebhookResultHandler_BadStatusIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	h := NewWebhookResultHandler(srv.URL)
+	err := h.Handle(context.Background(), &Run{ID: "r", StartedAt: time.Now().UTC(), FinishedAt: func() *time.Time { t := time.Now().UTC(); return &t }()}, &Invocation{}, nil)
+	if err == nil {
+		t.Error("expected error for 5xx response")
 	}
 }

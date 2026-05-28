@@ -8,7 +8,29 @@ import (
 // It is the generalization of the old Starlark router + future hooks.
 //
 // The gateway will call into the Engine at key points in the lifecycle
-// (routing, pre-execution, post-execution, etc.).
+// (routing via SelectRoute, pre-execution via PreRun, post-execution via PostRun).
+//
+// ResultHandlers (see gateway.ResultHandler) are a separate, lower-level
+// delivery mechanism. Policy PostRun is called by the gateway BEFORE any
+// registered ResultHandlers, and is intended for policy-level concerns such as:
+//   - Recording metrics or learning from outcomes (e.g. updating skill weights).
+//   - Emitting structured events for external systems.
+//   - Custom side effects that should happen regardless of adapter.
+//
+// ResultHandlers are for "what to do with the result" from the perspective
+// of the originating adapter or system: writing proof artifacts, posting
+// to Discord/Signal/webhooks, updating source tickets, etc.
+//
+// Both are always invoked (additively) for terminal runs in the gateway's
+// async completion path. A NoopEngine (the default) makes PostRun a no-op
+// so that pure ResultHandler usage requires no policy configuration.
+//
+// Adapters (MCP, Discord bot, cron poller, CLI, Signal, etc.) submit work
+// via Gateway.Submit and do not need to know about PostRun or handlers;
+// they can register their own ResultHandlers at construction or runtime
+// via RegisterResultHandler if they want per-adapter delivery behavior.
+// Future Starlark post_run hooks (Phase 3) will likely be invoked from
+// within a StarlarkEngine's PostRun implementation.
 type Engine interface {
 	// SelectRoute decides which provider/persona (or set for racing) should
 	// handle the given invocation. Returning nil means "use gateway defaults".
@@ -20,9 +42,15 @@ type Engine interface {
 	PreRun(ctx context.Context, inv *Invocation) error
 
 	// PostRun is called after a run reaches a terminal state (success or failure).
-	// This is the primary extension point for custom result handling, notifications,
-	// skill learning, etc. It is called *in addition to* any ResultHandlers
-	// registered on the gateway.
+	// It is invoked by the gateway *before* any registered ResultHandlers (see
+	// gateway package) and runs additively with them.
+	//
+	// Use this for policy-driven post-run logic (skill improvement, auditing,
+	// cross-run state). Use ResultHandlers for adapter-specific result delivery
+	// (proof writing, notifications, callbacks).
+	//
+	// Implementations must be safe for concurrent calls and must not assume
+	// they run on any particular goroutine.
 	PostRun(ctx context.Context, run RunSummary, inv Invocation) error
 }
 
