@@ -19,7 +19,6 @@ import (
 	"github.com/haha-systems/ariadne/internal/router"
 	"github.com/haha-systems/ariadne/internal/runstate"
 	"github.com/haha-systems/ariadne/internal/supervisor"
-	"github.com/haha-systems/ariadne/internal/worksource"
 )
 
 const runStatePathEnv = "ARIADNE_RUN_STATE_PATH"
@@ -63,7 +62,6 @@ type Service struct {
 	supervisor  *supervisor.Supervisor
 	collector   *proof.Collector
 	proofConfig proof.Config
-	source      worksource.WorkSource
 	stateStore  *runstate.Store
 	globalEnv   map[string]string
 	hooks       []string
@@ -117,7 +115,12 @@ func New(cfg *config.Config, repoRoot string) (*Service, error) {
 			CICommand:         cfg.Proof.CICommand,
 			Env:               cfg.Sandbox.Env,
 		},
-		source:     worksource.NewManualSource(),
+		// NOTE: The `source` field (formerly initialized with worksource.NewManualSource())
+		// was removed as part of the gateway transition in Phase 2. ManualSource was a
+		// no-op WorkSource only needed for the legacy operator-based direct-run path.
+		// The modern gateway + SupervisorExecutor handles direct runs without any
+		// WorkSource. The operator package remains legacy; nil is safe to pass where
+		// Source/ReviewSource/notifier were previously provided (see executeManualRun).
 		stateStore: stateStore,
 		globalEnv:  globalEnv,
 		hooks:      append([]string(nil), cfg.Hooks...),
@@ -226,8 +229,8 @@ func (s *Service) executeManualRun(ctx context.Context, run *domain.Run, task *d
 		Provider:     p,
 		GlobalEnv:    mapsClone(s.globalEnv),
 		Persona:      persona,
-		Source:       s.source,
-		ReviewSource: s.source,
+		Source:       nil, // ManualSource removed (gateway transition); nil is safe for Issue tasks per supervisor.RunRequest docs
+		ReviewSource: nil,
 		TokenSource:  nil,
 	})
 
@@ -250,7 +253,7 @@ func (s *Service) executeManualRun(ctx context.Context, run *domain.Run, task *d
 		collector = proof.New(cfg)
 	}
 
-	bundle, err := collector.Collect(ctx, run, task, taskEnv, p, s.source)
+	bundle, err := collector.Collect(ctx, run, task, taskEnv, p, nil) // ManualSource removed (gateway transition); nil notifier is safe per collector.Collect docs
 	if err != nil {
 		_ = s.stateStore.Update(run.ID, func(r *runstate.Record) error {
 			r.Status = domain.RunStatusFailed
