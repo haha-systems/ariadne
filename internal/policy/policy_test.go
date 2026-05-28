@@ -3,14 +3,12 @@ package policy
 import (
 	"context"
 	"testing"
-
-	"github.com/haha-systems/ariadne/internal/gateway"
 )
 
 func TestNoopEngine_DoesNothing(t *testing.T) {
 	eng := NoopEngine{}
 
-	inv := gateway.Invocation{Title: "test", Prompt: "do something"}
+	inv := Invocation{Title: "test", Prompt: "do something"}
 
 	decision, err := eng.SelectRoute(context.Background(), inv)
 	if err != nil {
@@ -24,7 +22,7 @@ func TestNoopEngine_DoesNothing(t *testing.T) {
 		t.Errorf("PreRun: %v", err)
 	}
 
-	run := &gateway.Run{ID: "run_1", Status: "succeeded"}
+	run := RunSummary{ID: "run_1", Status: "succeeded"}
 	if err := eng.PostRun(context.Background(), run, inv); err != nil {
 		t.Errorf("PostRun: %v", err)
 	}
