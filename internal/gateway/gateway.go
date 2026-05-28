@@ -40,11 +40,28 @@ func New(cfg Config, exec Executor) (Gateway, error) {
 	if exec == nil {
 		return nil, fmt.Errorf("gateway: executor is required")
 	}
+
+	handlers := append([]ResultHandler(nil), cfg.ResultHandlers...)
+
+	// Automatically register a logging handler unless the caller explicitly
+	// passed a no-op or disabled it. This makes adapters and direct usage
+	// get reasonable observability out of the box.
+	hasHandler := false
+	for _, h := range handlers {
+		if _, ok := h.(noopResultHandler); ok {
+			hasHandler = true
+			break
+		}
+	}
+	if !hasHandler {
+		handlers = append(handlers, NewLoggingResultHandler(nil))
+	}
+
 	g := &gateway{
 		cfg:      cfg,
 		runs:     make(map[string]*Run),
 		active:   make(map[string]context.CancelFunc),
-		handlers: append([]ResultHandler(nil), cfg.ResultHandlers...),
+		handlers: handlers,
 		executor: exec,
 	}
 	return g, nil
