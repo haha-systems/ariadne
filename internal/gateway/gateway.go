@@ -115,11 +115,33 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 	run.Provider = inv.Provider
 	run.Persona = inv.Persona
 
+	// === Policy PreRun hook (Phase 3 Task 1) ===
+	// Called after routing but before any run record is persisted and before
+	// the executor is launched. PreRun may mutate (via pointer) and/or veto.
+	policyPre := toPolicyInvocation(inv)
+	if err := g.policy.PreRun(ctx, &policyPre); err != nil {
+		return nil, fmt.Errorf("policy pre_run failed: %w", err)
+	}
+	applyPolicyInvToGateway(&inv, policyPre)
+
+	// Re-apply provider/persona (and other derived) in case PreRun mutated them.
+	if inv.Provider != "" {
+		run.Provider = inv.Provider
+	}
+	if inv.Persona != "" {
+		run.Persona = inv.Persona
+	}
+	// Title can be rewritten by PreRun; keep Run record in sync.
+	if inv.Title != "" {
+		run.Title = inv.Title
+	}
+
 	g.mu.Lock()
 	g.runs[run.ID] = run
 	g.mu.Unlock()
 
 	// Launch asynchronously so Submit returns immediately (like the real paths do today).
+	// PreRun (policy) has already had its chance to mutate/veto above.
 	runCtx, cancel := context.WithCancel(context.Background())
 	g.mu.Lock()
 	g.active[run.ID] = cancel
@@ -277,15 +299,42 @@ func copyMap(m map[string]string) map[string]string {
 // own Invocation type. This keeps the policy layer decoupled.
 func toPolicyInvocation(inv Invocation) policy.Invocation {
 	return policy.Invocation{
-		ID:        inv.ID,
-		Title:     inv.Title,
-		Prompt:    inv.Prompt,
-		Labels:    append([]string(nil), inv.Labels...),
-		Provider:  inv.Provider,
-		Persona:   inv.Persona,
-		Routing:   inv.Routing,
-		Source:    inv.Source,
-		SourceURL: inv.SourceURL,
-		Metadata:  copyMap(inv.Metadata),
+		ID:          inv.ID,
+		Title:       inv.Title,
+		Prompt:      inv.Prompt,
+		Labels:      append([]string(nil), inv.Labels...),
+		Provider:    inv.Provider,
+		Persona:     inv.Persona,
+		Routing:     inv.Routing,
+		Source:      inv.Source,
+		SourceURL:   inv.SourceURL,
+		PublishMode: inv.PublishMode,
+		Metadata:    copyMap(inv.Metadata),
+		Env:         copyMap(inv.Env),
 	}
+}
+
+// applyPolicyInvToGateway copies fields that a PreRun policy is allowed to
+// mutate from the (post-hook) policy.Invocation back into the gateway
+// Invocation that will be passed to the executor and recorded.
+//
+// ID and Source are intentionally never overwritten from policy.
+func applyPolicyInvToGateway(gw *Invocation, pol policy.Invocation) {
+	if gw == nil {
+		return
+	}
+	if pol.Title != "" {
+		gw.Title = pol.Title
+	}
+	if pol.Prompt != "" {
+		gw.Prompt = pol.Prompt
+	}
+	gw.Provider = pol.Provider
+	gw.Persona = pol.Persona
+	gw.Routing = pol.Routing
+	gw.Labels = append([]string(nil), pol.Labels...)
+	gw.SourceURL = pol.SourceURL
+	gw.PublishMode = pol.PublishMode
+	gw.Env = copyMap(pol.Env)
+	gw.Metadata = copyMap(pol.Metadata)
 }

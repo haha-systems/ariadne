@@ -9,14 +9,24 @@ import (
 //
 // The gateway will call into the Engine at key points in the lifecycle
 // (routing, pre-execution, post-execution, etc.).
+//
+// Implementations (e.g. StarlarkEngine) are the primary extension mechanism
+// for routing, pre/post behaviors, and (future) scheduling across adapters.
 type Engine interface {
 	// SelectRoute decides which provider/persona (or set for racing) should
 	// handle the given invocation. Returning nil means "use gateway defaults".
 	SelectRoute(ctx context.Context, inv Invocation) (*RouteDecision, error)
 
-	// PreRun is called after routing but before the executor is invoked.
-	// The handler can mutate the invocation (e.g. inject env, rewrite prompt,
-	// add extra MCP servers for the agent, or return an error to veto the run).
+	// PreRun is called after SelectRoute (and any decision application) but
+	// before the executor is invoked.
+	//
+	// The handler can mutate the invocation (e.g. inject env vars via Env,
+	// rewrite Prompt, override Provider/Persona, mutate Labels/Metadata,
+	// or return an error to veto the run entirely).
+	//
+	// The gateway applies supported mutations before persisting the run
+	// record and launching the executor. See StarlarkEngine for the concrete
+	// host API and safety model when using Starlark policies.
 	PreRun(ctx context.Context, inv *Invocation) error
 
 	// PostRun is called after a run reaches a terminal state (success or failure).

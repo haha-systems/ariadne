@@ -344,3 +344,127 @@ def select_route(inv):
 		t.Errorf("expected provider 'gemini' via policy, got %q", got.Provider)
 	}
 }
+
+// capturingExecutor records the Invocation it receives (for PreRun mutation tests).
+type capturingExecutor struct {
+	mu  sync.Mutex
+	inv Invocation
+}
+
+func (c *capturingExecutor) Execute(ctx context.Context, runID string, inv Invocation) (string, error) {
+	c.mu.Lock()
+	c.inv = inv // copy
+	c.mu.Unlock()
+	// small delay so async doesn't race the checks in tests
+	time.Sleep(5 * time.Millisecond)
+	return "/tmp/capt-" + runID, nil
+}
+
+func (c *capturingExecutor) lastInv() Invocation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inv
+}
+
+// TestGateway_PreRun_MutationsAndVeto proves that PreRun is wired in Submit,
+// mutations (env, prompt rewrite, provider) are respected and reach the
+// executor, and veto prevents run creation.
+func TestGateway_PreRun_MutationsAndVeto(t *testing.T) {
+	repoRoot := t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	policyPath := filepath.Join(repoRoot, "prerun-policy.star")
+	policyContent := `
+def pre_run(inv):
+    inv["prompt"] = "AUGMENTED: " + inv["prompt"]
+    inv["env"] = {"PRE_RUN_ENV": "1", "EXTRA": "policy"}
+    if "force-gemini" in inv.get("labels", []):
+        inv["provider"] = "gemini"
+    if "veto-me" in inv.get("labels", []):
+        fail("veto from test policy")
+    return None
+`
+	if err := os.WriteFile(policyPath, []byte(policyContent), 0644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cfg := &config.Config{
+		Ariadne: config.AriadneConfig{DefaultProvider: "sleeper"},
+		Sandbox: config.SandboxConfig{
+			WorktreeDir:       ".ariadne/runs",
+			TimeoutMinutes:    1,
+			PreserveOnFailure: true,
+		},
+		Providers: map[string]config.ProviderConfig{
+			"sleeper": {Enabled: true, Binary: "/bin/sh", ExtraArgs: []string{"-c", "exit 0"}},
+			"gemini":  {Enabled: true, Binary: "/bin/sh", ExtraArgs: []string{"-c", "exit 0"}},
+		},
+		Personas: map[string]config.PersonaConfig{},
+	}
+
+	providers := BuildProvidersFromConfig(cfg)
+	sup := DefaultSupervisorForGateway(cfg, repoRoot)
+	exec := NewSupervisorExecutor(repoRoot, sup, providers, cfg.Personas)
+
+	pol, err := policy.NewStarlarkEngine(policyPath)
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+
+	gw, err := New(Config{
+		RepoRoot:        repoRoot,
+		DefaultProvider: "sleeper",
+		Policy:          pol,
+	}, exec)
+	if err != nil {
+		t.Fatalf("New gateway: %v", err)
+	}
+	defer gw.Close()
+
+	t.Run("mutation_reaches_executor", func(t *testing.T) {
+		capExec := &capturingExecutor{}
+		// Recreate gw with capturer for isolation (simple for test)
+		gw2, _ := New(Config{RepoRoot: repoRoot, DefaultProvider: "sleeper", Policy: pol}, capExec)
+		defer gw2.Close()
+
+		_, err := gw2.Submit(context.Background(), Invocation{
+			Title:  "mut test",
+			Prompt: "original prompt",
+			Labels: []string{"force-gemini"},
+			Source: "test",
+		})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		time.Sleep(30 * time.Millisecond)
+
+		got := capExec.lastInv()
+		if got.Prompt != "AUGMENTED: original prompt" {
+			t.Errorf("executor did not see mutated prompt: %q", got.Prompt)
+		}
+		if got.Env["PRE_RUN_ENV"] != "1" {
+			t.Errorf("executor did not see injected env: %v", got.Env)
+		}
+		if got.Provider != "gemini" {
+			t.Errorf("executor did not see provider override from pre_run: %q", got.Provider)
+		}
+	})
+
+	t.Run("veto_prevents_run", func(t *testing.T) {
+		_, err := gw.Submit(context.Background(), Invocation{
+			Title:  "veto test",
+			Prompt: "x",
+			Labels: []string{"veto-me"},
+		})
+		if err == nil {
+			t.Fatal("expected error from PreRun veto")
+		}
+		if !contains(err.Error(), "pre_run failed") || !contains(err.Error(), "veto from test") {
+			t.Errorf("error should wrap pre_run veto, got: %v", err)
+		}
+	})
+}
+
+func contains(s, sub string) bool {
+	return strings.Contains(s, sub)
+}
