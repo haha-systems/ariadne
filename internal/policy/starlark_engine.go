@@ -23,6 +23,12 @@ type StarlarkConfig struct {
 	// read_file is permitted to read from (including subdirectories).
 	// Relative roots are resolved at construction time against the process cwd.
 	// If empty, NewStarlarkEngine defaults to the directory containing scriptPath.
+	//
+	// Relative read paths supplied to read_file() are always resolved against
+	// the *first* root in this list (primary root). Absolute paths are allowed
+	// under any root. This design avoids ambiguity for bare relative names
+	// when multiple roots are configured. See safeResolveReadPath for details
+	// and symlink hardening.
 	AllowedReadRoots []string
 
 	// Snapshots of gateway configuration for the list_* builtins.
@@ -54,7 +60,8 @@ type StarlarkEngine struct {
 // NewStarlarkEngine creates an engine backed by the given Starlark file.
 //
 // The optional cfg (variadic for backward compat) enriches the builtins
-// available to policy scripts. See StarlarkConfig docs.
+// available to policy scripts. See StarlarkConfig docs (including
+// AllowedReadRoots resolution rules for read_file).
 func NewStarlarkEngine(scriptPath string, cfg ...StarlarkConfig) (*StarlarkEngine, error) {
 	if _, err := os.Stat(scriptPath); err != nil {
 		return nil, fmt.Errorf("policy starlark file not found: %s: %w", scriptPath, err)
@@ -69,7 +76,9 @@ func NewStarlarkEngine(scriptPath string, cfg ...StarlarkConfig) (*StarlarkEngin
 	if len(roots) == 0 {
 		roots = []string{filepath.Dir(scriptPath)}
 	}
-	// Normalize roots once
+	// Normalize roots once. We prefer EvalSymlinks (realpath) forms when the
+	// root exists so that symlink-based escape checks and macOS /tmp behaviors
+	// are handled consistently for both lexical and realpath containment.
 	normRoots := make([]string, 0, len(roots))
 	for _, r := range roots {
 		if r == "" {
@@ -79,6 +88,10 @@ func NewStarlarkEngine(scriptPath string, cfg ...StarlarkConfig) (*StarlarkEngin
 		if err != nil {
 			abs = r
 		}
+		if real, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+			abs = real
+		}
+		abs = filepath.Clean(abs)
 		normRoots = append(normRoots, abs)
 	}
 	if len(normRoots) == 0 {
@@ -129,7 +142,8 @@ func (e *StarlarkEngine) SelectRoute(ctx context.Context, inv Invocation) (*Rout
 // The inv dict passed to pre_run is mutable from Starlark. Assignments to
 // supported keys (prompt, title, provider, persona, routing, labels, env,
 // metadata, publish_mode, source_url) are applied back to the Go Invocation
-// after the call returns.
+// after the call returns. Per the unified mutation semantics, assigning e.g.
+// inv["title"] = "" will clear the field (see policy.Invocation docs).
 //
 // Veto: the hook can call fail("human readable reason") (or any Starlark
 // error) to abort the run before it is persisted or launched. The error is
@@ -427,9 +441,22 @@ func updateInvocationFromStarlark(d *starlark.Dict, inv *Invocation) error {
 }
 
 // safeResolveReadPath implements the sandbox for the read_file builtin.
-// Relative paths are resolved against the first allowed root (normally the
-// directory of the policy.star file). Absolute paths and paths with .. that
-// escape the roots are rejected. Called from the predeclared closure.
+//
+// Relative paths (those not absolute after Clean) are resolved by joining
+// against allowedRoots[0] (the primary root, normally the directory of the
+// policy.star file or the first explicitly configured root). This keeps
+// relative resolution unambiguous when multiple roots are supplied.
+//
+// Absolute paths are permitted if they (lexically) reside under ANY configured
+// root. The validation loop intentionally checks all roots.
+//
+// Symlink / escape hardening: after a successful lexical containment check,
+// if the candidate path exists we call filepath.EvalSymlinks and re-validate
+// that the realpath is also under one of the roots. This prevents a symlink
+// residing inside an allowed root from pointing outside the sandbox. If
+// EvalSymlinks fails (e.g. the target does not yet exist), we rely on the
+// lexical check (subsequent os.ReadFile will fail anyway if unreadable).
+// See also StarlarkConfig.AllowedReadRoots.
 func (e *StarlarkEngine) safeResolveReadPath(p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("read_file: empty path")
@@ -464,6 +491,33 @@ func (e *StarlarkEngine) safeResolveReadPath(p string) (string, error) {
 
 		rel, err := filepath.Rel(rabs, abs)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			// Lexical check passed for this root. Now harden against symlinks:
+			// resolve on-disk path (if exists) and re-validate containment on realpath,
+			// using resolved forms of the allowed roots too (important on macOS where
+			// /tmp is a symlink to /private/tmp, and t.TempDir paths may vary).
+			if real, err := filepath.EvalSymlinks(abs); err == nil {
+				realSafe := false
+				for _, r2 := range e.allowedRoots {
+					r2abs, err := filepath.Abs(r2)
+					if err != nil {
+						r2abs = r2
+					}
+					r2abs = filepath.Clean(r2abs)
+					// Prefer realpath for the root when comparing the target's realpath.
+					if realRoot, rerr := filepath.EvalSymlinks(r2abs); rerr == nil {
+						r2abs = realRoot
+					}
+					r2abs = filepath.Clean(r2abs)
+					rrel, err := filepath.Rel(r2abs, real)
+					if err == nil && rrel != ".." && !strings.HasPrefix(rrel, ".."+string(filepath.Separator)) {
+						realSafe = true
+						break
+					}
+				}
+				if !realSafe {
+					return "", fmt.Errorf("read_file: path %q escapes allowed policy directories (via symlink)", p)
+				}
+			}
 			return abs, nil
 		}
 	}

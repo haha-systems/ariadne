@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -69,7 +70,27 @@ func New(cfg Config, exec Executor) (Gateway, error) {
 	}
 
 	if g.policy == nil {
-		g.policy = policy.NoopEngine{}
+		if cfg.PolicyFile != "" {
+			if _, statErr := os.Stat(cfg.PolicyFile); statErr == nil {
+				sc := policy.StarlarkConfig{
+					Providers: cfg.Providers,
+					Personas:  cfg.Personas,
+					Skills:    cfg.Skills,
+					// AllowedReadRoots left empty: NewStarlarkEngine defaults to script dir.
+					// Memory left nil (callers who need memory_* builtins construct explicitly).
+				}
+				if eng, loadErr := policy.NewStarlarkEngine(cfg.PolicyFile, sc); loadErr != nil {
+					return nil, fmt.Errorf("gateway: load Starlark policy from %q: %w", cfg.PolicyFile, loadErr)
+				} else {
+					g.policy = eng
+				}
+			} else {
+				// File absent: graceful fallback to noop (consistent with legacy router).
+				g.policy = policy.NoopEngine{}
+			}
+		} else {
+			g.policy = policy.NoopEngine{}
+		}
 	}
 
 	return g, nil
@@ -118,23 +139,19 @@ func (g *gateway) Submit(ctx context.Context, inv Invocation) (*Run, error) {
 	// === Policy PreRun hook (Phase 3 Task 1) ===
 	// Called after routing but before any run record is persisted and before
 	// the executor is launched. PreRun may mutate (via pointer) and/or veto.
+	// Post-mutation values (including empties, per unified semantics) are
+	// applied to both the invocation for the executor and the Run record.
 	policyPre := toPolicyInvocation(inv)
 	if err := g.policy.PreRun(ctx, &policyPre); err != nil {
 		return nil, fmt.Errorf("policy pre_run failed: %w", err)
 	}
 	applyPolicyInvToGateway(&inv, policyPre)
 
-	// Re-apply provider/persona (and other derived) in case PreRun mutated them.
-	if inv.Provider != "" {
-		run.Provider = inv.Provider
-	}
-	if inv.Persona != "" {
-		run.Persona = inv.Persona
-	}
-	// Title can be rewritten by PreRun; keep Run record in sync.
-	if inv.Title != "" {
-		run.Title = inv.Title
-	}
+	// Re-apply provider/persona/title from post-PreRun values (policy may
+	// deliberately clear to "" under the unified mutation rules).
+	run.Provider = inv.Provider
+	run.Persona = inv.Persona
+	run.Title = inv.Title
 
 	g.mu.Lock()
 	g.runs[run.ID] = run
@@ -319,16 +336,18 @@ func toPolicyInvocation(inv Invocation) policy.Invocation {
 // Invocation that will be passed to the executor and recorded.
 //
 // ID and Source are intentionally never overwritten from policy.
+//
+// All mutable fields are assigned unconditionally (the unified rule chosen
+// for Phase 3 Task 1 fixes): policy may clear Title/Prompt/Provider/etc by
+// setting them to "". See policy.Invocation documentation for the full
+// mutation contract and guidance for policy authors on leaving fields
+// unchanged.
 func applyPolicyInvToGateway(gw *Invocation, pol policy.Invocation) {
 	if gw == nil {
 		return
 	}
-	if pol.Title != "" {
-		gw.Title = pol.Title
-	}
-	if pol.Prompt != "" {
-		gw.Prompt = pol.Prompt
-	}
+	gw.Title = pol.Title
+	gw.Prompt = pol.Prompt
 	gw.Provider = pol.Provider
 	gw.Persona = pol.Persona
 	gw.Routing = pol.Routing

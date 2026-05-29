@@ -43,6 +43,10 @@ func mcpCmd(cfgPath *string) *cobra.Command {
 			gw, err := gateway.New(gateway.Config{
 				RepoRoot:        repoRoot(),
 				DefaultProvider: cfg.Ariadne.DefaultProvider,
+				Providers:       cfg.Providers,
+				Personas:        cfg.Personas,
+				Skills:          cfg.Skills,
+				PolicyFile:      cfg.Routing.RouterFile,
 			}, exec)
 			if err != nil {
 				return fmt.Errorf("create gateway: %w", err)

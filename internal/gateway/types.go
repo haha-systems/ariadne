@@ -100,12 +100,26 @@ type Config struct {
 	Sandbox         config.SandboxConfig
 	Skills          map[string]config.SkillConfig
 	// Policy is the policy engine used for routing (SelectRoute) and hooks
-	// (PreRun + PostRun). If nil, a NoopEngine is used.
+	// (PreRun + PostRun). If nil, a NoopEngine is used (unless PolicyFile
+	// triggers auto-construction of a StarlarkEngine).
 	//
 	// StarlarkEngine is the recommended implementation for Phase 3+.
 	// It gives policies access to a rich mutable invocation dict plus safe
 	// builtins (json, restricted read_file, log, memory, list_*).
 	Policy policy.Engine
+
+	// PolicyFile is an optional path to a Starlark policy script (typically
+	// the value of routing.router_file from ariadne.toml). When Policy is nil
+	// and PolicyFile points to an existing file, New automatically constructs
+	// a *policy.StarlarkEngine, populating its StarlarkConfig with the
+	// Providers, Personas, and Skills from this Config (so list_* and
+	// enriched read_file work out of the box for production gateway paths).
+	// AllowedReadRoots defaults to the script directory; Memory is not
+	// auto-wired (callers needing it should construct the engine directly).
+	// If the file does not exist, New falls back to NoopEngine silently
+	// (matching legacy router behavior). Explicit non-nil Policy always wins.
+	PolicyFile string
+
 	// ResultHandlers are the built-in ones (more can be registered at runtime).
 	ResultHandlers []ResultHandler
 }

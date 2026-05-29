@@ -306,8 +306,13 @@ def select_route(inv):
 	sup := DefaultSupervisorForGateway(cfg, repoRoot)
 	exec := NewSupervisorExecutor(repoRoot, sup, providers, cfg.Personas)
 
-	// Load Starlark policy
-	pol, err := policy.NewStarlarkEngine(policyPath)
+	// Load Starlark policy (supply StarlarkConfig so enriched builtins like
+	// list_* and read_file with gateway data are available in policy scripts).
+	pol, err := policy.NewStarlarkEngine(policyPath, policy.StarlarkConfig{
+		Providers: cfg.Providers,
+		Personas:  cfg.Personas,
+		Skills:    cfg.Skills,
+	})
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
@@ -406,7 +411,11 @@ def pre_run(inv):
 	sup := DefaultSupervisorForGateway(cfg, repoRoot)
 	exec := NewSupervisorExecutor(repoRoot, sup, providers, cfg.Personas)
 
-	pol, err := policy.NewStarlarkEngine(policyPath)
+	pol, err := policy.NewStarlarkEngine(policyPath, policy.StarlarkConfig{
+		Providers: cfg.Providers,
+		Personas:  cfg.Personas,
+		Skills:    cfg.Skills,
+	})
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}

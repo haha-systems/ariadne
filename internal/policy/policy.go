@@ -21,9 +21,11 @@ type Engine interface {
 	// before the executor is invoked.
 	//
 	// The handler can mutate the invocation (e.g. inject env vars via Env,
-	// rewrite Prompt, override Provider/Persona, mutate Labels/Metadata,
-	// or return an error to veto the run entirely).
+	// rewrite or clear Prompt/Title, override or clear Provider/Persona, mutate
+	// Labels/Metadata, or return an error to veto the run entirely).
 	//
+	// Mutation rules (unified): writing a field (including to "") replaces its
+	// value; see Invocation docs for details and how to leave fields unchanged.
 	// The gateway applies supported mutations before persisting the run
 	// record and launching the executor. See StarlarkEngine for the concrete
 	// host API and safety model when using Starlark policies.

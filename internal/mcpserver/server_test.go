@@ -150,6 +150,9 @@ func TestServerStartAndCancelRunTools(t *testing.T) {
 	gw, err := gateway.New(gateway.Config{
 		RepoRoot:        repoRoot,
 		DefaultProvider: cfg.Ariadne.DefaultProvider,
+		Providers:       cfg.Providers,
+		Personas:        cfg.Personas,
+		Skills:          cfg.Skills,
 	}, exec)
 	if err != nil {
 		t.Fatalf("create gateway: %v", err)
