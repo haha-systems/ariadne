@@ -1,26 +1,20 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
-	"time"
 
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/issueworkflow"
 	"github.com/haha-systems/ariadne/internal/proof"
-	"github.com/haha-systems/ariadne/internal/provider"
-	"github.com/haha-systems/ariadne/internal/router"
-	"github.com/haha-systems/ariadne/internal/supervisor"
-	"github.com/haha-systems/ariadne/internal/worksource"
 )
 
 var version = "dev"
@@ -45,6 +39,10 @@ func rootCmd() *cobra.Command {
 		collectProofCmd(&cfgPath),
 		landCmd(&cfgPath),
 		costCmd(&cfgPath),
+		researchCmd(&cfgPath),
+		agentsCmd(&cfgPath),
+		budgetCmd(&cfgPath),
+		escalationsCmd(&cfgPath),
 	)
 	return root
 }
@@ -73,7 +71,11 @@ func runCmd(cfgPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			return startOrchestrator(ctx, cfg)
+			wf, err := issueworkflow.New(cfg)
+			if err != nil {
+				return err
+			}
+			return wf.Run(ctx)
 		},
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable DEBUG-level logging")
@@ -185,324 +187,4 @@ func costCmd(cfgPath *string) *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// startOrchestrator wires together all components and runs the main loop.
-func startOrchestrator(ctx context.Context, cfg *config.Config) error {
-	// Build enabled providers.
-	providers := buildProviders(cfg)
-	if len(providers) == 0 {
-		return fmt.Errorf("no enabled providers configured")
-	}
-
-	providerNames := make([]string, 0, len(providers))
-	for name := range providers {
-		providerNames = append(providerNames, name)
-	}
-
-	charmlog.Info("ariadne starting",
-		"providers", strings.Join(providerNames, ","),
-		"interval", fmt.Sprintf("%ds", cfg.Ariadne.WorkIntervalSeconds),
-		"max_concurrent", cfg.Ariadne.MaxConcurrentRuns,
-	)
-
-	// Build work source.
-	source, err := buildWorkSource(cfg)
-	if err != nil {
-		return err
-	}
-
-	// Wire components.
-	rt := router.NewWithPersonas(
-		providers,
-		cfg.Routing.LabelRoutes,
-		cfg.Routing.PersonaRoutes,
-		cfg.Personas,
-		cfg.Routing.Strategy,
-		cfg.Ariadne.DefaultProvider,
-	)
-
-	sup := supervisor.New(supervisor.Config{
-		WorktreeBaseDir:   cfg.Sandbox.WorktreeDir,
-		TimeoutMinutes:    cfg.Sandbox.TimeoutMinutes,
-		PreserveOnFailure: cfg.Sandbox.PreserveOnFailure,
-		RepoRoot:          repoRoot(),
-		WorkflowFile:      cfg.Sandbox.WorkflowFile,
-	})
-
-	proofCollector := proof.New(proof.Config{
-		RequireCIPass: cfg.Proof.RequireCIPass,
-		PRBaseBranch:  cfg.Proof.PRBaseBranch,
-	})
-
-	poller := worksource.NewPoller(source, worksource.PollerConfig{
-		IntervalSeconds:   cfg.Ariadne.WorkIntervalSeconds,
-		MaxConcurrentRuns: cfg.Ariadne.MaxConcurrentRuns,
-	})
-
-	taskCh := poller.Run(ctx)
-
-	for task := range taskCh {
-		go func() {
-			defer poller.Done()
-			executeTask(ctx, task, rt, sup, proofCollector, source, cfg.Hooks)
-		}()
-	}
-
-	charmlog.Info("ariadne stopped")
-	return nil
-}
-
-func executeTask(
-	ctx context.Context,
-	task *domain.Task,
-	rt *router.Router,
-	sup *supervisor.Supervisor,
-	collector *proof.Collector,
-	source worksource.WorkSource,
-	hooks []string,
-) {
-	log := charmlog.With("task_id", task.ID)
-
-	route, err := rt.Route(task)
-	if err != nil {
-		log.Error("routing failed", "error", err)
-		return
-	}
-
-	if route.RaceN > 1 {
-		providerNames := make([]string, len(route.Providers))
-		for i, p := range route.Providers {
-			providerNames[i] = p.Name()
-		}
-		log.Info("race started", "title", task.Title, "runners", route.RaceN, "providers", strings.Join(providerNames, ","))
-		executeRace(ctx, task, route, sup, collector, source, hooks, log)
-		return
-	}
-
-	p := route.Providers[0]
-	personaName := ""
-	if route.Persona != nil {
-		personaName = route.Persona.Name
-	}
-	log.Info("task routed", "title", task.Title, "type", task.Type, "provider", p.Name(), "persona", personaName)
-	executeRun(ctx, task, p, route.Persona, sup, collector, source, hooks, log)
-}
-
-// executeRace spawns N parallel runs and takes the first success.
-func executeRace(
-	ctx context.Context,
-	task *domain.Task,
-	route router.RouteResult,
-	sup *supervisor.Supervisor,
-	collector *proof.Collector,
-	source worksource.WorkSource,
-	hooks []string,
-	log *charmlog.Logger,
-) {
-	type outcome struct {
-		result *supervisor.Result
-		p      provider.AgentProvider
-	}
-
-	raceCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	ch := make(chan outcome, len(route.Providers))
-
-	ts := tokenSource(source)
-	for _, p := range route.Providers {
-		go func() {
-			run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
-			result := sup.Execute(raceCtx, supervisor.RunRequest{
-				Run:          run,
-				Task:         task,
-				Provider:     p,
-				Persona:      route.Persona,
-				Source:       source,
-				ReviewSource: source,
-				TokenSource:  ts,
-			})
-			ch <- outcome{result: result, p: p}
-		}()
-	}
-
-	var winner *supervisor.Result
-	var winnerProvider provider.AgentProvider
-	failures := 0
-
-	for range len(route.Providers) {
-		out := <-ch
-		if out.result.Err == nil && winner == nil {
-			winner = out.result
-			winnerProvider = out.p
-			cancel() // context cancellation stops the remaining runs
-		} else {
-			failures++
-		}
-	}
-
-	if winner == nil {
-		log.Error("all race runs failed", "count", len(route.Providers))
-		source.PostResult(ctx, task, fmt.Sprintf("All %d race runs failed", len(route.Providers))) //nolint:errcheck
-		return
-	}
-
-	log.Info("race winner", "provider", winnerProvider.Name(), "run_id", winner.Run.ID, "failures", failures)
-	finishRun(ctx, winner.Run, task, winnerProvider, collector, source, hooks, log)
-}
-
-func executeRun(
-	ctx context.Context,
-	task *domain.Task,
-	p provider.AgentProvider,
-	persona *config.PersonaConfig,
-	sup *supervisor.Supervisor,
-	collector *proof.Collector,
-	source worksource.WorkSource,
-	hooks []string,
-	log *charmlog.Logger,
-) {
-	run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
-	result := sup.Execute(ctx, supervisor.RunRequest{
-		Run:          run,
-		Task:         task,
-		Provider:     p,
-		Persona:      persona,
-		Source:       source,
-		ReviewSource: source,
-		TokenSource:  tokenSource(source),
-	})
-	if result.Err != nil {
-		log.Error("run failed", "run_id", run.ID, "error", result.Err)
-		switch task.Type {
-		case domain.TaskTypeReview, domain.TaskTypeRevise:
-			source.RecordReviewOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
-		case domain.TaskTypeRebase:
-			source.RecordRebaseOutcome(ctx, task, false, result.Err.Error()) //nolint:errcheck
-		default:
-			source.PostResult(ctx, task, fmt.Sprintf("Run failed: %v", result.Err)) //nolint:errcheck
-		}
-		return
-	}
-	switch task.Type {
-	case domain.TaskTypeReview, domain.TaskTypeRevise:
-		return // outcome already recorded by supervisor
-	case domain.TaskTypeRebase:
-		return // outcome already recorded by supervisor via RecordRebaseOutcome
-	}
-	finishRun(ctx, run, task, p, collector, source, hooks, log)
-}
-
-func finishRun(
-	ctx context.Context,
-	run *domain.Run,
-	task *domain.Task,
-	p provider.AgentProvider,
-	collector *proof.Collector,
-	source worksource.WorkSource,
-	hooks []string,
-	log *charmlog.Logger,
-) {
-	log.Info("run succeeded", "run_id", run.ID)
-
-	bundle, err := collector.Collect(ctx, run, task, p, source)
-	if err != nil {
-		log.Error("proof collection failed", "run_id", run.ID, "error", err)
-		source.PostResult(ctx, task, fmt.Sprintf("Run succeeded but proof collection failed: %v", err)) //nolint:errcheck
-		return
-	}
-
-	if err := source.PostResult(ctx, task, formatProofSummary(bundle)); err != nil {
-		log.Error("post result failed", "error", err)
-	}
-
-	// Run post-run hooks with the summary path.
-	if len(hooks) > 0 {
-		summaryPath := filepath.Join(run.WorktreePath, "proof", "summary.json")
-		if err := proof.RunHooks(ctx, hooks, summaryPath); err != nil {
-			log.Warn("post-run hook failed", "run_id", run.ID, "error", err)
-		}
-	}
-
-	log.Info("run complete — worktree preserved", "run_id", run.ID, "path", run.WorktreePath)
-}
-
-func formatProofSummary(b *domain.ProofBundle) string {
-	data, _ := json.MarshalIndent(b, "", "  ")
-	return "```json\n" + string(data) + "\n```"
-}
-
-func buildProviders(cfg *config.Config) map[string]provider.AgentProvider {
-	providers := make(map[string]provider.AgentProvider)
-	for name, pcfg := range cfg.Providers {
-		if !pcfg.Enabled {
-			continue
-		}
-		switch name {
-		case "claude":
-			providers[name] = provider.NewClaudeCodeAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		case "codex":
-			providers[name] = provider.NewCodexAdapter(pcfg.Binary, pcfg.ExtraArgs)
-		case "gemini":
-			providers[name] = provider.NewGeminiCLIAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		case "opencode":
-			providers[name] = provider.NewOpenCodeAdapter(pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-		default:
-			// Treat unknown names with a binary set as custom adapters.
-			if pcfg.Binary != "" {
-				providers[name] = provider.NewCustomAdapter(name, pcfg.Binary, pcfg.ExtraArgs, pcfg.CostPer1kTokens)
-			} else {
-				charmlog.Warn("unknown provider type with no binary, skipping", "name", name)
-			}
-		}
-	}
-	return providers
-}
-
-func buildWorkSource(cfg *config.Config) (worksource.WorkSource, error) {
-	if cfg.WorkSources.GitHub != nil {
-		token := os.Getenv("GITHUB_TOKEN")
-		appID, keyPath := os.Getenv("GH_APP_APP_ID"), os.Getenv("GH_APP_PRIVATE_KEY_PATH")
-		if token == "" && (appID == "" || keyPath == "") {
-			return nil, fmt.Errorf("GitHub auth required: set GITHUB_TOKEN, or both GH_APP_APP_ID and GH_APP_PRIVATE_KEY_PATH")
-		}
-		return worksource.NewGitHubSource(token, cfg.WorkSources.GitHub.Repo, cfg.WorkSources.GitHub.LabelFilter, cfg.WorkSources.GitHub.AllowedAuthors)
-	}
-	if cfg.WorkSources.Linear != nil {
-		token := os.Getenv("LINEAR_API_KEY")
-		if token == "" {
-			return nil, fmt.Errorf("LINEAR_API_KEY env var required for Linear work source")
-		}
-		return worksource.NewLinearSource(token, cfg.WorkSources.Linear.TeamID, cfg.WorkSources.Linear.StateFilter)
-	}
-	return nil, fmt.Errorf("no work source configured — add [work_sources.github] or [work_sources.linear] to ariadne.toml")
-}
-
-// tokenSource extracts a supervisor.TokenSource from a WorkSource if the
-// underlying implementation supports it. Returns nil for non-GitHub sources.
-func tokenSource(ws worksource.WorkSource) supervisor.TokenSource {
-	if ts, ok := ws.(supervisor.TokenSource); ok {
-		return ts
-	}
-	return nil
-}
-
-func repoRoot() string {
-	// Walk up from cwd to find the git root.
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return dir // fallback
-		}
-		dir = parent
-	}
-}
-
-func newRunID() string {
-	return fmt.Sprintf("run_%d", time.Now().UnixNano())
 }

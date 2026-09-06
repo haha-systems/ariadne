@@ -19,7 +19,7 @@ type shellAdapter struct {
 	capabilities    []Capability
 }
 
-func (a *shellAdapter) adapterName() string            { return a.name }
+func (a *shellAdapter) adapterName() string               { return a.name }
 func (a *shellAdapter) adapterCapabilities() []Capability { return a.capabilities }
 
 func (a *shellAdapter) adapterCostEstimate(promptLen int) (float64, bool) {
@@ -78,6 +78,9 @@ func (h *processHandle) Cancel() error {
 func buildEnv(rc RunContext) []string {
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("ARIADNE_TASK_FILE=%s", rc.TaskFile))
+	if rc.OutputFile != "" {
+		env = append(env, fmt.Sprintf("ARIADNE_OUTPUT_FILE=%s", rc.OutputFile))
+	}
 	for k, v := range rc.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}

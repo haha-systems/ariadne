@@ -106,3 +106,69 @@ func TestBuildEnv_ContainsTaskFile(t *testing.T) {
 		t.Error("FOO not set in env")
 	}
 }
+
+func TestBuildEnv_ContainsOutputFileWhenSet(t *testing.T) {
+	rc := RunContext{TaskFile: "/tmp/task.md", OutputFile: "/tmp/envelope.json"}
+	env := buildEnv(rc)
+
+	var hasOutputFile bool
+	for _, e := range env {
+		if e == "ARIADNE_OUTPUT_FILE=/tmp/envelope.json" {
+			hasOutputFile = true
+		}
+	}
+	if !hasOutputFile {
+		t.Error("ARIADNE_OUTPUT_FILE not set in env")
+	}
+}
+
+func TestBuildEnv_OmitsOutputFileWhenEmpty(t *testing.T) {
+	rc := RunContext{TaskFile: "/tmp/task.md"}
+	env := buildEnv(rc)
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "ARIADNE_OUTPUT_FILE=") {
+			t.Errorf("expected no ARIADNE_OUTPUT_FILE entry, got %q", e)
+		}
+	}
+}
+
+func TestClaudeCodeAdapter_SupportsModelOverride(t *testing.T) {
+	a := NewClaudeCodeAdapter("claude", nil, 0)
+	if !a.SupportsModelOverride() {
+		t.Error("expected claude to support model override")
+	}
+}
+
+func TestClaudeCodeAdapter_Run_AppendsModelFlag(t *testing.T) {
+	// Use "echo" as a stand-in for the claude binary; assert the --model
+	// flag and override value appear in its (logged) output.
+	a := NewClaudeCodeAdapter("echo", nil, 0)
+
+	dir := t.TempDir()
+	taskFile := filepath.Join(dir, "task.md")
+	if err := os.WriteFile(taskFile, []byte("do stuff"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	rc := RunContext{
+		RepoPath:      dir,
+		TaskFile:      taskFile,
+		LogWriter:     &buf,
+		ModelOverride: "gpt-6-astra",
+	}
+
+	handle, err := a.Run(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := handle.Wait(); err != nil {
+		t.Fatalf("wait error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "--model") || !strings.Contains(out, "gpt-6-astra") {
+		t.Errorf("expected --model gpt-6-astra in output, got: %q", out)
+	}
+}

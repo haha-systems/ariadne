@@ -84,13 +84,13 @@ func ParseFrontMatter(description string) (*TaskConfig, string) {
 
 	// Find closing ---
 	rest := description[len(frontMatterMarker):]
-	idx := strings.Index(rest, "\n"+frontMatterMarker)
-	if idx < 0 {
+	before, after, ok := strings.Cut(rest, "\n"+frontMatterMarker)
+	if !ok {
 		return nil, description
 	}
 
-	yamlBlock := strings.TrimSpace(rest[:idx])
-	body := strings.TrimSpace(rest[idx+len("\n"+frontMatterMarker):])
+	yamlBlock := strings.TrimSpace(before)
+	body := strings.TrimSpace(after)
 
 	var wrapper struct {
 		Ariadne TaskConfig `yaml:"ariadne"`

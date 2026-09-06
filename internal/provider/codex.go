@@ -18,9 +18,16 @@ func NewCodexAdapter(binary string, extraArgs []string) *CodexAdapter {
 	}}
 }
 
-func (a *CodexAdapter) Name() string                                    { return a.shell.adapterName() }
-func (a *CodexAdapter) Capabilities() []Capability                     { return a.shell.adapterCapabilities() }
-func (a *CodexAdapter) CostEstimate(n int) (float64, bool)             { return a.shell.adapterCostEstimate(n) }
+func (a *CodexAdapter) Name() string                       { return a.shell.adapterName() }
+func (a *CodexAdapter) Capabilities() []Capability         { return a.shell.adapterCapabilities() }
+func (a *CodexAdapter) CostEstimate(n int) (float64, bool) { return a.shell.adapterCostEstimate(n) }
+
+// SupportsModelOverride reports false: codex has no documented per-invocation
+// model flag today. RunContext.ModelOverride is silently ignored rather than
+// passed through as a bogus argument — callers that need a different model
+// should route to a different agent profile/provider entirely.
+func (a *CodexAdapter) SupportsModelOverride() bool { return false }
+
 func (a *CodexAdapter) Run(ctx context.Context, rc RunContext) (RunHandle, error) {
 	return a.shell.adapterRun(ctx, rc)
 }

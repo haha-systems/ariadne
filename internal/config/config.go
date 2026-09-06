@@ -10,13 +10,17 @@ import (
 
 // Config is the top-level ariadne.toml structure.
 type Config struct {
-	Ariadne   AriadneConfig  `toml:"ariadne"`
-	WorkSources WorkSourcesConfig         `toml:"work_sources"`
-	Providers   map[string]ProviderConfig `toml:"providers"`
-	Routing     RoutingConfig             `toml:"routing"`
-	Proof       ProofConfig               `toml:"proof"`
-	Sandbox     SandboxConfig             `toml:"sandbox"`
-	Hooks       []string                  `toml:"hooks"`
+	Ariadne       AriadneConfig                 `toml:"ariadne"`
+	WorkSources   WorkSourcesConfig             `toml:"work_sources"`
+	Providers     map[string]ProviderConfig     `toml:"providers"`
+	AgentProfiles map[string]AgentProfileConfig `toml:"agent_profiles"`
+	Routing       RoutingConfig                 `toml:"routing"`
+	Proof         ProofConfig                   `toml:"proof"`
+	Sandbox       SandboxConfig                 `toml:"sandbox"`
+	Memory        MemoryConfig                  `toml:"memory"`
+	QAC           QACConfig                     `toml:"qac"`
+	Research      ResearchConfig                `toml:"research"`
+	Hooks         []string                      `toml:"hooks"`
 	// Personas is populated by discoverPersonas; not read from TOML directly.
 	Personas map[string]PersonaConfig
 }
@@ -50,9 +54,22 @@ type ProviderConfig struct {
 	CostPer1kTokens float64  `toml:"cost_per_1k_tokens"`
 }
 
+// AgentProfileConfig describes one entry under [agent_profiles.<name>]. It is
+// orthogonal to Providers/Personas: Provider names which provider adapter
+// executes the profile, Model is passed as a per-invocation override (only
+// honored by providers that support it), and CostClass/ScarcityClass drive
+// scheduler decisions without exposing the model name to scheduling logic.
+type AgentProfileConfig struct {
+	Provider      string `toml:"provider"`
+	Model         string `toml:"model"`
+	Persona       string `toml:"persona"`
+	CostClass     string `toml:"cost_class"`
+	ScarcityClass string `toml:"scarcity_class"`
+}
+
 type RoutingConfig struct {
-	Strategy     string            `toml:"strategy"`
-	LabelRoutes  map[string]string `toml:"label_routes"`
+	Strategy      string            `toml:"strategy"`
+	LabelRoutes   map[string]string `toml:"label_routes"`
 	PersonaRoutes map[string]string `toml:"persona_routes"`
 }
 
@@ -66,6 +83,47 @@ type SandboxConfig struct {
 	TimeoutMinutes    int    `toml:"timeout_minutes"`
 	PreserveOnFailure bool   `toml:"preserve_on_failure"`
 	WorkflowFile      string `toml:"workflow_file"`
+}
+
+// MemoryConfig selects the memory.Store backend. Ghostdive is optional —
+// when nil, the runtime uses the in-memory backend (package
+// internal/memory/inmemory) with no external dependency.
+type MemoryConfig struct {
+	Ghostdive *GhostdiveConfig `toml:"ghostdive"`
+}
+
+// GhostdiveConfig points at a Ghostdive instance. The API key is read from
+// the GHOSTDIVE_API_KEY environment variable, matching the GITHUB_TOKEN /
+// LINEAR_API_KEY convention used by the work sources.
+type GhostdiveConfig struct {
+	BaseURL          string            `toml:"base_url"`
+	SpaceIDByProject map[string]string `toml:"space_id_by_project"`
+}
+
+// QACConfig configures Quota-Aware Cognition escalation policy. It covers
+// a single scarce agent (Astra) for the MVP, per spec §47 ("the MVP only
+// needs Ari -> Astra").
+type QACConfig struct {
+	// Approval is the ControlMode: "automatic", "manual", or "disabled".
+	Approval           string `toml:"approval"`
+	MaxCallsPerCycle   int    `toml:"max_calls_per_cycle"`
+	MaxCallsPerSession int    `toml:"max_calls_per_session"`
+	CooldownMinutes    int    `toml:"cooldown_minutes"`
+}
+
+// ResearchConfig declares research projects the `ariadne research` commands
+// can operate on.
+type ResearchConfig struct {
+	Projects map[string]ResearchProjectConfig `toml:"projects"`
+}
+
+// ResearchProjectConfig names the two agent profiles (see AgentProfileConfig)
+// a research project uses: a continuously-running routine agent and a
+// scarce frontier agent invoked only on approved escalation.
+type ResearchProjectConfig struct {
+	Repo          string `toml:"repo"`
+	RoutineAgent  string `toml:"routine_agent"`
+	FrontierAgent string `toml:"frontier_agent"`
 }
 
 // PersonaConfig describes a named agent persona discovered from .ariadne/personas/<name>/.

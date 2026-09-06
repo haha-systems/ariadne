@@ -1,0 +1,87 @@
+[ariadne]
+max_concurrent_runs = 4
+default_provider = "claude"
+work_interval_seconds = 30
+
+[work_sources.github]
+repo = "your-org/your-repo"
+label_filter = ["ariadne"]
+# allowed_authors = ["your-github-username"]  # optional: only claim issues from these users
+
+# Persona identity is expressed via git commit authorship (name/email in each
+# persona's persona.toml) and comment metadata. All personas share the
+# conductor's GITHUB_TOKEN for GitHub API operations.
+
+[providers.claude]
+enabled = true
+binary = "claude"
+extra_args = ["--model", "claude-sonnet-4-6", "--dangerously-skip-permissions"]
+cost_per_1k_tokens = 0.003
+
+# [providers.gemini]
+# enabled = false
+# binary = "gemini"
+# extra_args = ["--yolo"]
+# cost_per_1k_tokens = 0.0
+
+[routing]
+strategy = "round-robin"
+
+[routing.persona_routes]
+"bug" = "debugging-specialist"
+"enhancement" = "lead-engineer"
+"ariadne" = "lead-engineer"
+
+[proof]
+require_ci_pass = true
+pr_base_branch = "main"
+
+[sandbox]
+worktree_dir = ".ariadne/runs"
+timeout_minutes = 45
+preserve_on_failure = true
+workflow_file = ".ariadne/WORKFLOW.md"
+
+# --- Ariadne v2: Quota-Aware Cognition / research workflow (all optional) ---
+#
+# Agent Profiles separate a cognitive agent's identity (model, cost class,
+# scarcity class) from which provider CLI executes it. `ariadne agents` lists
+# these.
+#
+# [agent_profiles.ari]
+# provider = "codex"
+# model = "gpt-5.6-sol"
+# cost_class = "cheap"        # cheap | standard | expensive
+# scarcity_class = "plentiful" # plentiful | limited | rare
+#
+# [agent_profiles.astra]
+# provider = "codex"
+# model = "gpt-6-astra"
+# cost_class = "expensive"
+# scarcity_class = "rare"
+#
+# QAC governs whether the routine agent's escalation requests actually reach
+# the scarce agent. `ariadne budget` shows these limits.
+#
+# [qac]
+# approval = "automatic"      # automatic | manual | disabled
+# max_calls_per_cycle = 1
+# max_calls_per_session = 4
+# cooldown_minutes = 10
+#
+# A research project pairs a routine and a frontier agent profile. Run with
+# `ariadne research run <project>`; inspect with `ariadne research status
+# <project>` / `ariadne research frontier <project>` / `ariadne escalations`.
+#
+# [research.projects.distributed-cognition]
+# routine_agent = "ari"
+# frontier_agent = "astra"
+#
+# Shared research memory defaults to an in-process, non-persistent backend.
+# Point at a Ghostdive instance to persist observations/hypotheses/decisions
+# across runs (GHOSTDIVE_API_KEY env var supplies the API key):
+#
+# [memory.ghostdive]
+# base_url = "http://localhost:8080"
+# [memory.ghostdive.space_id_by_project]
+# distributed-cognition = "space-..."

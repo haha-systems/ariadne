@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/invocation"
 	"github.com/haha-systems/ariadne/internal/provider"
 )
 
@@ -144,7 +144,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	}
 	defer logFile.Close()
 
-	logWriter := newProviderLogWriter(logFile, run.ID)
+	logWriter := invocation.NewEventWriter(logFile, run.ID)
 
 	// 5. Apply timeout.
 	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
@@ -171,7 +171,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	}
 
 	// 7. Launch provider.
-	logEvent(logFile, "run_started", map[string]any{
+	logWriter.Log("run_started", map[string]any{
 		"run_id":   run.ID,
 		"provider": req.Provider.Name(),
 		"task_id":  run.TaskID,
@@ -198,7 +198,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		run.Status = domain.RunStatusTimeout
-		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		logWriter.Log("run_timeout", map[string]any{"run_id": run.ID})
 		charmlog.Warn("run timed out", "run_id", run.ID, "task_id", run.TaskID, "timeout", fmt.Sprintf("%dm", s.cfg.TimeoutMinutes))
 		if !s.cfg.PreserveOnFailure {
 			s.cleanup(run)
@@ -209,7 +209,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	if waitErr != nil {
 		run.Status = domain.RunStatusFailed
 		run.ErrorMsg = waitErr.Error()
-		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		logWriter.Log("run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
 		charmlog.Error("run failed", "run_id", run.ID, "task_id", run.TaskID, "error", waitErr)
 		if !s.cfg.PreserveOnFailure {
 			s.cleanup(run)
@@ -218,7 +218,7 @@ func (s *Supervisor) Execute(ctx context.Context, req RunRequest) *Result {
 	}
 
 	run.Status = domain.RunStatusSucceeded
-	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	logWriter.Log("run_succeeded", map[string]any{"run_id": run.ID})
 	charmlog.Info("run succeeded", "run_id", run.ID, "task_id", run.TaskID, "duration", duration)
 
 	return &Result{Run: run}
@@ -259,57 +259,6 @@ func (s *Supervisor) fail(run *domain.Run, err error) *Result {
 	run.FinishedAt = &t
 	run.ErrorMsg = err.Error()
 	return &Result{Run: run, Err: err}
-}
-
-// logEvent writes a structured JSON log line to the run log file.
-func logEvent(w *os.File, event string, fields map[string]any) {
-	fields["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
-	fields["event"] = event
-	line, _ := json.Marshal(fields)
-	w.Write(append(line, '\n')) //nolint:errcheck
-}
-
-// providerLogWriter wraps the run log file and streams each line to stderr
-// with a run ID prefix so concurrent runs stay distinguishable.
-type providerLogWriter struct {
-	w      *os.File // run.jsonl
-	prefix string   // e.g. "[run_123] "
-	buf    []byte   // line buffer for prefix injection
-}
-
-func newProviderLogWriter(w *os.File, runID string) *providerLogWriter {
-	return &providerLogWriter{
-		w:      w,
-		prefix: "[" + runID + "] ",
-	}
-}
-
-func (lw *providerLogWriter) Write(p []byte) (int, error) {
-	lw.buf = append(lw.buf, p...)
-
-	for {
-		idx := bytes.IndexByte(lw.buf, '\n')
-		if idx < 0 {
-			break
-		}
-		line := lw.buf[:idx+1]
-
-		// Write to run.jsonl as structured JSON.
-		entry := map[string]any{
-			"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-			"event":     "provider_stdout",
-			"line":      string(bytes.TrimRight(line, "\n")),
-		}
-		encoded, _ := json.Marshal(entry)
-		lw.w.Write(append(encoded, '\n')) //nolint:errcheck
-
-		// Stream to stderr with run ID prefix.
-		fmt.Fprintf(os.Stderr, "%s%s", lw.prefix, line)
-
-		lw.buf = lw.buf[idx+1:]
-	}
-
-	return len(p), nil
 }
 
 func mergeEnv(maps ...map[string]string) map[string]string {
@@ -542,7 +491,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	}
 	defer logFile.Close()
 
-	logWriter := newProviderLogWriter(logFile, run.ID)
+	logWriter := invocation.NewEventWriter(logFile, run.ID)
 
 	// Apply timeout.
 	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
@@ -568,7 +517,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 		MCPConfigPath:  mcpConfigPath,
 	}
 
-	logEvent(logFile, "run_started", map[string]any{
+	logWriter.Log("run_started", map[string]any{
 		"run_id":   run.ID,
 		"provider": req.Provider.Name(),
 		"task_id":  run.TaskID,
@@ -591,7 +540,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	if runCtx.Err() == context.DeadlineExceeded {
 		run.Status = domain.RunStatusTimeout
 		reason := fmt.Sprintf("run timed out after %d minutes", s.cfg.TimeoutMinutes)
-		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		logWriter.Log("run_timeout", map[string]any{"run_id": run.ID})
 		charmlog.Warn("run timed out", "run_id", run.ID, "pr", req.Task.ID, "branch", req.Task.Branch)
 		s.recordRebaseOutcome(ctx, req, false, reason)
 		if !s.cfg.PreserveOnFailure {
@@ -603,7 +552,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	if waitErr != nil {
 		run.Status = domain.RunStatusFailed
 		run.ErrorMsg = waitErr.Error()
-		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		logWriter.Log("run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
 		charmlog.Error("rebase failed", "run_id", run.ID, "pr", req.Task.ID, "attempt", req.Task.Attempts+1, "error", waitErr)
 		s.recordRebaseOutcome(ctx, req, false, waitErr.Error())
 		if !s.cfg.PreserveOnFailure {
@@ -613,7 +562,7 @@ func (s *Supervisor) executeRebase(ctx context.Context, req RunRequest) *Result 
 	}
 
 	run.Status = domain.RunStatusSucceeded
-	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	logWriter.Log("run_succeeded", map[string]any{"run_id": run.ID})
 	charmlog.Info("rebase succeeded", "run_id", run.ID, "pr", req.Task.ID, "branch", req.Task.Branch)
 	s.recordRebaseOutcome(ctx, req, true, "")
 	if !s.cfg.PreserveOnFailure {
@@ -658,7 +607,7 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 	}
 	defer logFile.Close()
 
-	logWriter := newProviderLogWriter(logFile, run.ID)
+	logWriter := invocation.NewEventWriter(logFile, run.ID)
 
 	// Apply timeout.
 	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
@@ -683,7 +632,7 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 		MCPConfigPath:  mcpConfigPath,
 	}
 
-	logEvent(logFile, "run_started", map[string]any{
+	logWriter.Log("run_started", map[string]any{
 		"run_id":  run.ID,
 		"task_id": run.TaskID,
 		"type":    "review",
@@ -704,7 +653,7 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 	if runCtx.Err() == context.DeadlineExceeded {
 		run.Status = domain.RunStatusTimeout
 		reason := fmt.Sprintf("review timed out after %d minutes", s.cfg.TimeoutMinutes)
-		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		logWriter.Log("run_timeout", map[string]any{"run_id": run.ID})
 		charmlog.Warn("run timed out", "run_id", run.ID, "pr", req.Task.ID)
 		s.recordReviewOutcome(ctx, req, false, reason)
 		return &Result{Run: run, Err: fmt.Errorf("%s", reason)}
@@ -713,14 +662,14 @@ func (s *Supervisor) executeReview(ctx context.Context, req RunRequest) *Result 
 	if waitErr != nil {
 		run.Status = domain.RunStatusFailed
 		run.ErrorMsg = waitErr.Error()
-		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		logWriter.Log("run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
 		charmlog.Error("run failed", "run_id", run.ID, "pr", req.Task.ID, "error", waitErr)
 		s.recordReviewOutcome(ctx, req, false, waitErr.Error())
 		return &Result{Run: run, Err: waitErr}
 	}
 
 	run.Status = domain.RunStatusSucceeded
-	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	logWriter.Log("run_succeeded", map[string]any{"run_id": run.ID})
 	// Agent exit 0 means it approved via gh pr review --approve.
 	charmlog.Info("review approved", "run_id", run.ID, "pr", req.Task.ID)
 	s.recordReviewOutcome(ctx, req, true, "")
@@ -788,7 +737,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	}
 	defer logFile.Close()
 
-	logWriter := newProviderLogWriter(logFile, run.ID)
+	logWriter := invocation.NewEventWriter(logFile, run.ID)
 
 	// Apply timeout.
 	timeout := time.Duration(s.cfg.TimeoutMinutes) * time.Minute
@@ -814,7 +763,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 		MCPConfigPath:  mcpConfigPath,
 	}
 
-	logEvent(logFile, "run_started", map[string]any{
+	logWriter.Log("run_started", map[string]any{
 		"run_id":  run.ID,
 		"task_id": run.TaskID,
 		"type":    "revise",
@@ -836,7 +785,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	if runCtx.Err() == context.DeadlineExceeded {
 		run.Status = domain.RunStatusTimeout
 		reason := fmt.Sprintf("revise timed out after %d minutes", s.cfg.TimeoutMinutes)
-		logEvent(logFile, "run_timeout", map[string]any{"run_id": run.ID})
+		logWriter.Log("run_timeout", map[string]any{"run_id": run.ID})
 		charmlog.Warn("run timed out", "run_id", run.ID, "pr", req.Task.ID)
 		s.recordReviewOutcome(ctx, req, false, reason)
 		if !s.cfg.PreserveOnFailure {
@@ -848,7 +797,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	if waitErr != nil {
 		run.Status = domain.RunStatusFailed
 		run.ErrorMsg = waitErr.Error()
-		logEvent(logFile, "run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
+		logWriter.Log("run_failed", map[string]any{"run_id": run.ID, "error": waitErr.Error()})
 		charmlog.Error("run failed", "run_id", run.ID, "pr", req.Task.ID, "error", waitErr)
 		s.recordReviewOutcome(ctx, req, false, "revision agent failed: "+waitErr.Error())
 		if !s.cfg.PreserveOnFailure {
@@ -858,7 +807,7 @@ func (s *Supervisor) executeRevise(ctx context.Context, req RunRequest) *Result 
 	}
 
 	run.Status = domain.RunStatusSucceeded
-	logEvent(logFile, "run_succeeded", map[string]any{"run_id": run.ID})
+	logWriter.Log("run_succeeded", map[string]any{"run_id": run.ID})
 	charmlog.Info("revision pushed", "run_id", run.ID, "pr", req.Task.ID, "branch", req.Task.Branch)
 
 	// On success, re-trigger QA review.
@@ -1073,8 +1022,8 @@ func writeMCPConfig(ctx context.Context, ts TokenSource) (path string, cleanup f
 	config := map[string]map[string]mcpServer{
 		"mcpServers": {
 			"github": {
-				Type: "http",
-				URL:  "https://api.githubcopilot.com/mcp",
+				Type:    "http",
+				URL:     "https://api.githubcopilot.com/mcp",
 				Headers: map[string]string{"Authorization": "Bearer " + token},
 			},
 		},

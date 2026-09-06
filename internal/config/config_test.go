@@ -102,6 +102,94 @@ preserve_on_failure = true
 	}
 }
 
+func TestLoad_QACAndResearchConfig(t *testing.T) {
+	path := writeTemp(t, `
+[ariadne]
+default_provider = "claude"
+
+[agent_profiles.ari]
+provider = "codex"
+model = "gpt-5.6-sol"
+cost_class = "cheap"
+scarcity_class = "plentiful"
+
+[agent_profiles.astra]
+provider = "codex"
+model = "gpt-6-astra"
+cost_class = "expensive"
+scarcity_class = "rare"
+
+[qac]
+approval = "automatic"
+max_calls_per_cycle = 1
+max_calls_per_session = 4
+cooldown_minutes = 10
+
+[research.projects.distributed-cognition]
+repo = "/path/to/repo"
+routine_agent = "ari"
+frontier_agent = "astra"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.QAC.Approval != "automatic" || cfg.QAC.MaxCallsPerCycle != 1 || cfg.QAC.MaxCallsPerSession != 4 || cfg.QAC.CooldownMinutes != 10 {
+		t.Errorf("unexpected QAC config: %+v", cfg.QAC)
+	}
+	proj, ok := cfg.Research.Projects["distributed-cognition"]
+	if !ok {
+		t.Fatal("expected distributed-cognition research project")
+	}
+	if proj.RoutineAgent != "ari" || proj.FrontierAgent != "astra" {
+		t.Errorf("unexpected research project config: %+v", proj)
+	}
+	ari, ok := cfg.AgentProfiles["ari"]
+	if !ok || ari.CostClass != "cheap" || ari.ScarcityClass != "plentiful" {
+		t.Errorf("unexpected ari agent profile: %+v", ari)
+	}
+}
+
+func TestLoad_MemoryDefaultsToNilGhostdive(t *testing.T) {
+	path := writeTemp(t, `
+[ariadne]
+default_provider = "claude"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Memory.Ghostdive != nil {
+		t.Errorf("expected nil Ghostdive config by default, got %+v", cfg.Memory.Ghostdive)
+	}
+}
+
+func TestLoad_MemoryGhostdiveConfig(t *testing.T) {
+	path := writeTemp(t, `
+[ariadne]
+default_provider = "claude"
+
+[memory.ghostdive]
+base_url = "http://localhost:8080"
+
+[memory.ghostdive.space_id_by_project]
+distributed-cognition = "space-abc123"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Memory.Ghostdive == nil {
+		t.Fatal("expected non-nil Ghostdive config")
+	}
+	if cfg.Memory.Ghostdive.BaseURL != "http://localhost:8080" {
+		t.Errorf("unexpected base_url: %s", cfg.Memory.Ghostdive.BaseURL)
+	}
+	if cfg.Memory.Ghostdive.SpaceIDByProject["distributed-cognition"] != "space-abc123" {
+		t.Errorf("unexpected space id mapping: %v", cfg.Memory.Ghostdive.SpaceIDByProject)
+	}
+}
+
 func TestLoad_PersonaRoutes(t *testing.T) {
 	path := writeTemp(t, `
 [ariadne]
@@ -140,8 +228,8 @@ func TestDiscoverPersonas_WithPersonas(t *testing.T) {
 	if err := os.MkdirAll(leDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(leDir, "SOUL.md"), []byte("I am a lead engineer."), 0644)   //nolint:errcheck
-	os.WriteFile(filepath.Join(leDir, "CLAUDE.md"), []byte("# Claude context"), 0644)      //nolint:errcheck
+	os.WriteFile(filepath.Join(leDir, "SOUL.md"), []byte("I am a lead engineer."), 0644) //nolint:errcheck
+	os.WriteFile(filepath.Join(leDir, "CLAUDE.md"), []byte("# Claude context"), 0644)    //nolint:errcheck
 
 	// Create project-manager persona with persona.toml.
 	pmDir := filepath.Join(personasDir, "project-manager")

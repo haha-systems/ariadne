@@ -1,6 +1,8 @@
 package supervisor
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +11,24 @@ import (
 
 	"github.com/haha-systems/ariadne/internal/config"
 	"github.com/haha-systems/ariadne/internal/domain"
+	"github.com/haha-systems/ariadne/internal/provider"
 )
+
+// stubProvider is a minimal fake provider.AgentProvider that succeeds
+// immediately without spawning a subprocess.
+type stubProvider struct{ name string }
+
+func (p stubProvider) Name() string                        { return p.name }
+func (p stubProvider) Capabilities() []provider.Capability { return nil }
+func (p stubProvider) CostEstimate(int) (float64, bool)    { return 0, false }
+func (p stubProvider) Run(context.Context, provider.RunContext) (provider.RunHandle, error) {
+	return stubHandle{}, nil
+}
+
+type stubHandle struct{}
+
+func (stubHandle) Wait() error   { return nil }
+func (stubHandle) Cancel() error { return nil }
 
 func TestMergeEnv(t *testing.T) {
 	global := map[string]string{"A": "1", "B": "2"}
@@ -146,7 +165,7 @@ func TestBuildTaskPrompt_NoPersona(t *testing.T) {
 		Description: "Details here.",
 		Source:      "github",
 		SourceURL:   "https://github.com/org/repo/issues/42",
-		Labels: []string{"ariadne"},
+		Labels:      []string{"ariadne"},
 	}
 	prompt := string(buildTaskPrompt(task, "", nil))
 	if !strings.Contains(prompt, "# Task: Do the thing") {
@@ -165,7 +184,7 @@ func TestBuildTaskPrompt_NoPersona(t *testing.T) {
 
 func TestBuildTaskPrompt_WithPersona_SoulAndPersonality(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("I am a lead engineer."), 0644)        //nolint:errcheck
+	os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("I am a lead engineer."), 0644)         //nolint:errcheck
 	os.WriteFile(filepath.Join(dir, "PERSONALITY.md"), []byte("I prefer minimal code."), 0644) //nolint:errcheck
 
 	persona := &config.PersonaConfig{Name: "lead-engineer", Dir: dir}
@@ -217,7 +236,7 @@ func TestBuildTaskPrompt_WithPersona_FallsBackToWorkflowFile(t *testing.T) {
 
 func TestBuildTaskPrompt_WithPersona_ExtraFiles(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("Soul content."), 0644)         //nolint:errcheck
+	os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("Soul content."), 0644)          //nolint:errcheck
 	os.WriteFile(filepath.Join(dir, "CONTEXT.md"), []byte("Extra context here."), 0644) //nolint:errcheck
 
 	persona := &config.PersonaConfig{Name: "lead-engineer", Dir: dir}
@@ -314,7 +333,7 @@ func TestBuildReviewPrompt_Format(t *testing.T) {
 
 	// Create QA persona AGENTS.md
 	personasDir := filepath.Join(repoDir, ".ariadne", "personas", "qa-engineer")
-	os.MkdirAll(personasDir, 0755) //nolint:errcheck
+	os.MkdirAll(personasDir, 0755)                                                                //nolint:errcheck
 	os.WriteFile(filepath.Join(personasDir, "AGENTS.md"), []byte("You are a QA reviewer."), 0644) //nolint:errcheck
 
 	sup := &Supervisor{cfg: Config{RepoRoot: repoDir, TimeoutMinutes: 5}}
@@ -448,9 +467,9 @@ func TestExecute_RebaseTask_TakesRebasePath(t *testing.T) {
 	// but the error message must reflect the rebase path, not the issue path.
 	repoDir := t.TempDir()
 	sup := New(Config{
-		RepoRoot:       repoDir,
+		RepoRoot:        repoDir,
 		WorktreeBaseDir: ".ariadne/runs",
-		TimeoutMinutes: 1,
+		TimeoutMinutes:  1,
 	})
 	task := &domain.Task{
 		ID:         "pr-99",
@@ -473,5 +492,61 @@ func TestExecute_RebaseTask_TakesRebasePath(t *testing.T) {
 		!strings.Contains(result.Err.Error(), "fetch") &&
 		!strings.Contains(result.Err.Error(), "create rebase worktree") {
 		t.Errorf("expected rebase-path error, got: %v", result.Err)
+	}
+}
+
+// TestExecute_IssueTask_RunLogSchemaUnchanged is a characterization test for
+// the invocation.EventWriter extraction: run.jsonl must keep emitting the
+// exact same event names and fields (run_started/run_succeeded with
+// run_id/provider/task_id) that the pre-v2 hand-rolled logEvent/
+// providerLogWriter pair produced, since external tooling (ariadne cost,
+// hooks) may depend on this schema.
+func TestExecute_IssueTask_RunLogSchemaUnchanged(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	sup := New(Config{RepoRoot: repoDir, WorktreeBaseDir: ".ariadne/runs", TimeoutMinutes: 1})
+	task := &domain.Task{ID: "task-1", Type: domain.TaskTypeIssue, Title: "test"}
+	run := &domain.Run{ID: "run-1", TaskID: task.ID}
+
+	result := sup.Execute(t.Context(), RunRequest{Run: run, Task: task, Provider: stubProvider{name: "stub"}})
+	if result.Err != nil {
+		t.Fatalf("Execute() error = %v", result.Err)
+	}
+
+	logPath := filepath.Join(repoDir, ".ariadne", "runs", run.ID, "run.jsonl")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read run.jsonl: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 log lines (run_started, run_succeeded), got %d: %v", len(lines), lines)
+	}
+
+	var started, succeeded map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &started); err != nil {
+		t.Fatalf("unmarshal run_started line: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &succeeded); err != nil {
+		t.Fatalf("unmarshal run_succeeded line: %v", err)
+	}
+
+	if started["event"] != "run_started" || started["run_id"] != "run-1" ||
+		started["provider"] != "stub" || started["task_id"] != "task-1" || started["timestamp"] == nil {
+		t.Errorf("run_started fields changed: %v", started)
+	}
+	if succeeded["event"] != "run_succeeded" || succeeded["run_id"] != "run-1" || succeeded["timestamp"] == nil {
+		t.Errorf("run_succeeded fields changed: %v", succeeded)
 	}
 }
