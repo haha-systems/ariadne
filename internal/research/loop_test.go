@@ -51,6 +51,19 @@ func (d *scriptedDecider) Decide(_ context.Context, req scheduler.DecisionReques
 	return d.decision, nil
 }
 
+// highValueEscalation is a request whose evidence clears the continue
+// baseline, for tests that need the scheduler to actually approve.
+func highValueEscalation(question string) *invocation.Escalation {
+	return &invocation.Escalation{
+		Question:            question,
+		Reason:              "routine work has exhausted the cheap discriminators",
+		Uncertainty:         0.9,
+		Importance:          0.9,
+		ExpectedGain:        0.8,
+		FailedLocalAttempts: 3,
+	}
+}
+
 func newTestLoop(ari, astra *scriptedRunner, decider Decider, store memory.Store) *AriLoop {
 	return &AriLoop{
 		Ari: ari, Astra: astra, Decider: decider, Memory: store,
@@ -325,8 +338,11 @@ func TestAriLoop_BudgetExhaustion_TerminatesViaRealScheduler(t *testing.T) {
 // again — the scheduler's recursion guard must reject it, and control must
 // still return to Ari.
 func TestAriLoop_AstraFurtherEscalation_RejectedByRecursionGuard(t *testing.T) {
+	// A genuinely high-value request, so the real scheduler approves it on
+	// epistemic value and Astra actually runs — this test is about what
+	// happens *after* approval, not about the scoring gate.
 	ari := &scriptedRunner{envelopes: []invocation.Envelope{
-		{Status: invocation.StatusEscalate, EscalationReason: "need astra"},
+		{Status: invocation.StatusEscalate, Escalation: highValueEscalation("need astra")},
 		{Status: invocation.StatusComplete},
 	}}
 	astra := &scriptedRunner{envelopes: []invocation.Envelope{

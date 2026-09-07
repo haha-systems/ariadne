@@ -62,6 +62,36 @@ func NewAdapter(client ghostdiveClient, spaceIDByProject map[string]string, poin
 	return &Adapter{client: client, spaceIDByProject: spaceIDByProject, pointerDir: pointerDir}
 }
 
+var _ memory.Preflighter = (*Adapter)(nil)
+
+// Preflight proves this adapter can actually serve project before an
+// expensive research run starts: it checks the project->space mapping, then
+// performs one lightweight authenticated read against that space.
+//
+// The read is what makes this worth doing. A misconfigured or expired
+// GHOSTDIVE_API_KEY is invisible until the first request, and the research
+// loop's memory writes are deliberately non-fatal — so without a preflight,
+// a 401 shows up as a cycle that runs to completion and then silently
+// persists nothing, leaving the next cycle to start from no frontier at all.
+//
+// An empty result is success: a project with no memories yet is normal, and
+// only a transport or authorization failure is a preflight failure.
+func (a *Adapter) Preflight(ctx context.Context, project string) error {
+	spaceID, err := a.spaceID(project)
+	if err != nil {
+		return fmt.Errorf("ghostdive: preflight: %w", err)
+	}
+
+	if _, err := a.client.Retrieve(ctx, spaceID, RetrieveRequest{
+		Query: frontierSubject(project),
+		TopK:  1,
+		Mode:  "lexical",
+	}); err != nil {
+		return fmt.Errorf("ghostdive: preflight: authenticated read of space %s for project %q failed: %w", spaceID, project, err)
+	}
+	return nil
+}
+
 func (a *Adapter) spaceID(project string) (string, error) {
 	id, ok := a.spaceIDByProject[project]
 	if !ok {

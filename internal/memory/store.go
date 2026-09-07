@@ -99,3 +99,32 @@ type Store interface {
 	Frontier(ctx context.Context, project string) (Record, error)
 	WriteFrontier(ctx context.Context, project, summary, agentID string) (Record, error)
 }
+
+// Preflighter is an optional Store capability: a cheap, authenticated
+// round-trip that proves the backend is actually usable for a project
+// before an expensive run begins.
+//
+// It exists because a backend can satisfy the Store interface and still be
+// unusable at runtime — a missing or rejected API key surfaces only on the
+// first real write, by which point an agent has already done a cycle's
+// worth of work whose results are then silently lost. Preflight moves that
+// failure to before the first invocation.
+//
+// A Preflight error means "this backend cannot serve this project": bad
+// credentials, an unmapped project, an unreachable host. It must not fail
+// merely because the project has no data yet.
+type Preflighter interface {
+	Preflight(ctx context.Context, project string) error
+}
+
+// Preflight validates store for project when the backend supports it.
+// Backends that don't implement Preflighter (the in-memory store, test
+// fakes) are always considered ready, so callers can invoke this
+// unconditionally.
+func Preflight(ctx context.Context, store Store, project string) error {
+	p, ok := store.(Preflighter)
+	if !ok {
+		return nil
+	}
+	return p.Preflight(ctx, project)
+}

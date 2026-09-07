@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/haha-systems/ariadne/internal/invocation"
 	"github.com/haha-systems/ariadne/internal/memory"
 )
 
@@ -66,12 +67,13 @@ func TestBuildPacket_IncludesFrontierAndEvidence(t *testing.T) {
 		},
 	}
 
-	packet, err := BuildPacket(context.Background(), store, "distributed-cognition", "Design the cheapest discriminator", []string{"ev-1"}, "")
+	req := invocation.Escalation{Question: "Design the cheapest discriminator", EvidenceRefs: []string{"ev-1"}}
+	packet, err := BuildPacket(context.Background(), store, "distributed-cognition", req, "", "")
 	if err != nil {
 		t.Fatalf("BuildPacket() error = %v", err)
 	}
-	if packet.Question != "Design the cheapest discriminator" {
-		t.Errorf("Question = %q", packet.Question)
+	if packet.Request.Question != "Design the cheapest discriminator" {
+		t.Errorf("Question = %q", packet.Request.Question)
 	}
 	if len(packet.Evidence) != 1 || packet.Evidence[0].ID != "ev-1" {
 		t.Errorf("Evidence = %+v", packet.Evidence)
@@ -83,7 +85,7 @@ func TestBuildPacket_IncludesFrontierAndEvidence(t *testing.T) {
 
 func TestBuildPacket_MissingFrontierIsNotAnError(t *testing.T) {
 	store := &fakeStore{frontierErr: errors.New("no frontier recorded")}
-	packet, err := BuildPacket(context.Background(), store, "p1", "question", nil, "")
+	packet, err := BuildPacket(context.Background(), store, "p1", invocation.Escalation{Question: "question"}, "", "")
 	if err != nil {
 		t.Fatalf("BuildPacket() error = %v, want nil (missing frontier is fine early in a project)", err)
 	}
@@ -94,7 +96,7 @@ func TestBuildPacket_MissingFrontierIsNotAnError(t *testing.T) {
 
 func TestBuildPacket_EvidenceErrorWrapped(t *testing.T) {
 	store := &fakeStore{evidenceErr: errors.New("boom")}
-	_, err := BuildPacket(context.Background(), store, "p1", "q", []string{"ev-1"}, "")
+	_, err := BuildPacket(context.Background(), store, "p1", invocation.Escalation{Question: "q", EvidenceRefs: []string{"ev-1"}}, "", "")
 	if err == nil {
 		t.Fatal("expected error to propagate from GetEvidence")
 	}
@@ -107,17 +109,25 @@ func TestPacket_Render_IsBoundedLength(t *testing.T) {
 	longSummary := strings.Repeat("x", maxFrontierChars*3)
 	packet := Packet{
 		Project:  "p1",
-		Question: "q",
+		Request:  invocation.Escalation{Question: "q"},
 		Frontier: memory.Record{Summary: longSummary},
 	}
 	rendered := packet.Render()
-	if len(rendered) > maxFrontierChars*2 {
-		t.Errorf("Render() length = %d, want bounded well under the unbounded %d chars", len(rendered), len(longSummary))
+	// The frontier is the unbounded input; the rest of the prompt is fixed
+	// scaffolding, so assert on what the bound actually protects.
+	if strings.Contains(rendered, longSummary) {
+		t.Error("Render() embedded the full untruncated frontier")
+	}
+	if !strings.Contains(rendered, "…") {
+		t.Error("Render() should mark the frontier as truncated")
+	}
+	if len(rendered) > len(longSummary) {
+		t.Errorf("Render() length = %d, want less than the unbounded %d chars", len(rendered), len(longSummary))
 	}
 }
 
 func TestPacket_Render_IncludesScopeNoticeAndGuidanceAndProtocol(t *testing.T) {
-	packet := Packet{Question: "q", Guidance: "Team mandate: characterize the parity effect."}
+	packet := Packet{Request: invocation.Escalation{Question: "q"}, Guidance: "Team mandate: characterize the parity effect."}
 	rendered := packet.Render()
 	if !strings.Contains(rendered, "SCOPE:") {
 		t.Error("expected the built-in scope notice to always be present")
@@ -130,11 +140,11 @@ func TestPacket_Render_IncludesScopeNoticeAndGuidanceAndProtocol(t *testing.T) {
 	}
 }
 
-func TestPacket_Render_IncludesGoalAndTask(t *testing.T) {
-	packet := Packet{Question: "What discriminates A from B?"}
+func TestPacket_Render_IncludesEscalatedQuestionAndTask(t *testing.T) {
+	packet := Packet{Request: invocation.Escalation{Question: "What discriminates A from B?"}}
 	rendered := packet.Render()
-	if !strings.Contains(rendered, "GOAL") || !strings.Contains(rendered, "What discriminates A from B?") {
-		t.Errorf("Render() missing GOAL section: %q", rendered)
+	if !strings.Contains(rendered, "ESCALATED QUESTION") || !strings.Contains(rendered, "What discriminates A from B?") {
+		t.Errorf("Render() missing escalated question: %q", rendered)
 	}
 	if !strings.Contains(rendered, "TASK") {
 		t.Errorf("Render() missing TASK section: %q", rendered)

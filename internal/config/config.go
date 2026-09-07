@@ -90,6 +90,15 @@ type SandboxConfig struct {
 // internal/memory/inmemory) with no external dependency.
 type MemoryConfig struct {
 	Ghostdive *GhostdiveConfig `toml:"ghostdive"`
+	// AllowInmemoryFallback permits a research run to continue against the
+	// in-memory backend when the configured durable backend fails its
+	// preflight check. It defaults to false — fail-fast — because a run
+	// that silently loses its frontier costs far more than one that
+	// refuses to start: every subsequent cycle re-derives context it
+	// already paid for, and the research programme never accumulates.
+	// Setting it true is an explicit decision to accept that loss, and the
+	// fallback is logged loudly when it happens.
+	AllowInmemoryFallback bool `toml:"allow_inmemory_fallback"`
 }
 
 // GhostdiveConfig points at a Ghostdive instance. The API key is read from
