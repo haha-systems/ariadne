@@ -66,7 +66,7 @@ func TestBuildPacket_IncludesFrontierAndEvidence(t *testing.T) {
 		},
 	}
 
-	packet, err := BuildPacket(context.Background(), store, "distributed-cognition", "Design the cheapest discriminator", []string{"ev-1"})
+	packet, err := BuildPacket(context.Background(), store, "distributed-cognition", "Design the cheapest discriminator", []string{"ev-1"}, "")
 	if err != nil {
 		t.Fatalf("BuildPacket() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestBuildPacket_IncludesFrontierAndEvidence(t *testing.T) {
 
 func TestBuildPacket_MissingFrontierIsNotAnError(t *testing.T) {
 	store := &fakeStore{frontierErr: errors.New("no frontier recorded")}
-	packet, err := BuildPacket(context.Background(), store, "p1", "question", nil)
+	packet, err := BuildPacket(context.Background(), store, "p1", "question", nil, "")
 	if err != nil {
 		t.Fatalf("BuildPacket() error = %v, want nil (missing frontier is fine early in a project)", err)
 	}
@@ -94,7 +94,7 @@ func TestBuildPacket_MissingFrontierIsNotAnError(t *testing.T) {
 
 func TestBuildPacket_EvidenceErrorWrapped(t *testing.T) {
 	store := &fakeStore{evidenceErr: errors.New("boom")}
-	_, err := BuildPacket(context.Background(), store, "p1", "q", []string{"ev-1"})
+	_, err := BuildPacket(context.Background(), store, "p1", "q", []string{"ev-1"}, "")
 	if err == nil {
 		t.Fatal("expected error to propagate from GetEvidence")
 	}
@@ -113,6 +113,20 @@ func TestPacket_Render_IsBoundedLength(t *testing.T) {
 	rendered := packet.Render()
 	if len(rendered) > maxFrontierChars*2 {
 		t.Errorf("Render() length = %d, want bounded well under the unbounded %d chars", len(rendered), len(longSummary))
+	}
+}
+
+func TestPacket_Render_IncludesScopeNoticeAndGuidanceAndProtocol(t *testing.T) {
+	packet := Packet{Question: "q", Guidance: "Team mandate: characterize the parity effect."}
+	rendered := packet.Render()
+	if !strings.Contains(rendered, "SCOPE:") {
+		t.Error("expected the built-in scope notice to always be present")
+	}
+	if !strings.Contains(rendered, "Team mandate: characterize the parity effect.") {
+		t.Error("expected project guidance to be included")
+	}
+	if !strings.Contains(rendered, "$ARIADNE_OUTPUT_FILE") {
+		t.Error("expected the envelope reporting protocol to be included")
 	}
 }
 

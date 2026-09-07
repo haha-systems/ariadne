@@ -25,4 +25,11 @@ type Envelope struct {
 	Summary          string         `json:"summary"`
 	Data             map[string]any `json:"data,omitempty"`
 	EscalationReason string         `json:"escalation_reason,omitempty"`
+	// Frontier, when non-empty, is an updated compressed summary of the
+	// project's current research state. The research workflow persists it
+	// via memory.Store.WriteFrontier so the next cycle (and any other
+	// researcher reading Ghostdive) sees it — this is how an agent
+	// durably records progress rather than it only living in this one
+	// invocation's Summary.
+	Frontier string `json:"frontier,omitempty"`
 }

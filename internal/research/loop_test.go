@@ -58,6 +58,99 @@ func newTestLoop(ari, astra *scriptedRunner, decider Decider, store memory.Store
 	}
 }
 
+func TestAriLoop_Prompt_IncludesScopeNoticeGuidanceProtocolAndFrontier(t *testing.T) {
+	ari := &scriptedRunner{envelopes: []invocation.Envelope{{Status: invocation.StatusComplete}}}
+	astra := &scriptedRunner{}
+	store := inmemory.New()
+	if _, err := store.WriteFrontier(context.Background(), "p1", "parity holds under nonlinearity", "ari"); err != nil {
+		t.Fatalf("WriteFrontier() error = %v", err)
+	}
+
+	loop := newTestLoop(ari, astra, &scriptedDecider{}, store)
+	loop.Guidance = "Team mandate: characterize the parity effect."
+	if err := loop.Run(context.Background(), "p1", 1); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(ari.calls) != 1 {
+		t.Fatalf("expected 1 Ari invocation, got %d", len(ari.calls))
+	}
+	prompt := ari.calls[0].Prompt
+	for _, want := range []string{"SCOPE:", "Team mandate: characterize the parity effect.", "$ARIADNE_OUTPUT_FILE", "parity holds under nonlinearity"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected prompt to contain %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestAriLoop_EnvelopeFrontier_PersistedAsNewFrontier(t *testing.T) {
+	ari := &scriptedRunner{envelopes: []invocation.Envelope{
+		{Status: invocation.StatusComplete, Summary: "wrapped up this cycle", Frontier: "updated: nonlinearity confirmed via E14"},
+	}}
+	astra := &scriptedRunner{}
+	store := inmemory.New()
+
+	loop := newTestLoop(ari, astra, &scriptedDecider{}, store)
+	if err := loop.Run(context.Background(), "p1", 1); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	frontier, err := store.Frontier(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("Frontier() error = %v", err)
+	}
+	if frontier.Summary != "updated: nonlinearity confirmed via E14" {
+		t.Errorf("Frontier().Summary = %q, want the envelope's Frontier field to have been persisted", frontier.Summary)
+	}
+}
+
+func TestAriLoop_EnvelopeWithoutFrontier_LeavesExistingFrontierUntouched(t *testing.T) {
+	ari := &scriptedRunner{envelopes: []invocation.Envelope{{Status: invocation.StatusComplete, Summary: "no update this cycle"}}}
+	astra := &scriptedRunner{}
+	store := inmemory.New()
+	if _, err := store.WriteFrontier(context.Background(), "p1", "original frontier", "ari"); err != nil {
+		t.Fatalf("WriteFrontier() error = %v", err)
+	}
+
+	loop := newTestLoop(ari, astra, &scriptedDecider{}, store)
+	if err := loop.Run(context.Background(), "p1", 1); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	frontier, err := store.Frontier(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("Frontier() error = %v", err)
+	}
+	if frontier.Summary != "original frontier" {
+		t.Errorf("Frontier().Summary = %q, want it unchanged since the envelope had no Frontier field", frontier.Summary)
+	}
+}
+
+func TestAriLoop_AstraEnvelopeFrontier_AlsoPersisted(t *testing.T) {
+	ari := &scriptedRunner{envelopes: []invocation.Envelope{
+		{Status: invocation.StatusEscalate, EscalationReason: "need astra"},
+		{Status: invocation.StatusComplete},
+	}}
+	astra := &scriptedRunner{envelopes: []invocation.Envelope{
+		{Status: invocation.StatusComplete, Summary: "resolved the fork", Frontier: "astra's updated frontier"},
+	}}
+	decider := &scriptedDecider{decision: scheduler.Decision{Escalated: true, Reason: "high value fork"}}
+	store := inmemory.New()
+
+	loop := newTestLoop(ari, astra, decider, store)
+	if err := loop.Run(context.Background(), "p1", 10); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	frontier, err := store.Frontier(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("Frontier() error = %v", err)
+	}
+	if frontier.Summary != "astra's updated frontier" {
+		t.Errorf("Frontier().Summary = %q, want Astra's Frontier field to have been persisted too", frontier.Summary)
+	}
+}
+
 func TestAriLoop_NormalContinue_NeverInvokesAstra(t *testing.T) {
 	ari := &scriptedRunner{envelopes: []invocation.Envelope{
 		{Status: invocation.StatusContinue, Summary: "inspecting results"},

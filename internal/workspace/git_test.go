@@ -62,6 +62,55 @@ func TestGitProvider_AcquireRelease_CreatesAndRemovesWorktree(t *testing.T) {
 	}
 }
 
+func TestPersistentGitProvider_ReusesExistingWorktreeAcrossCalls(t *testing.T) {
+	repoRoot := t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	p := &PersistentGitProvider{RepoRoot: repoRoot, Path: filepath.Join(".ariadne", "research", "demo", "workspace")}
+
+	first, err := p.Acquire(context.Background(), KindWorktreeBacked)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if first.Kind != KindWorktreeBacked {
+		t.Errorf("Kind = %q, want %q", first.Kind, KindWorktreeBacked)
+	}
+
+	// Simulate uncommitted work an agent left behind in a previous session.
+	marker := filepath.Join(first.Path, "experiment-notes.md")
+	if err := os.WriteFile(marker, []byte("progress so far"), 0644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	second, err := p.Acquire(context.Background(), KindWorktreeBacked)
+	if err != nil {
+		t.Fatalf("second Acquire() error = %v", err)
+	}
+	if second.Path != first.Path {
+		t.Errorf("second Acquire() path = %q, want the same path as the first (%q)", second.Path, first.Path)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected the previous session's file to survive a second Acquire(): %v", err)
+	}
+}
+
+func TestPersistentGitProvider_ReleaseIsANoOp(t *testing.T) {
+	repoRoot := t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	p := &PersistentGitProvider{RepoRoot: repoRoot, Path: filepath.Join(".ariadne", "research", "demo", "workspace")}
+	ws, err := p.Acquire(context.Background(), KindWorktreeBacked)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	if err := p.Release(context.Background(), ws); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	if _, err := os.Stat(ws.Path); err != nil {
+		t.Errorf("expected the worktree to survive Release(), got stat error: %v", err)
+	}
+}
+
 func TestGitProvider_Acquire_FailsOutsideGitRepo(t *testing.T) {
 	p := &GitProvider{RepoRoot: t.TempDir(), BaseDir: ".ariadne/research"}
 	if _, err := p.Acquire(context.Background(), KindWorktreeBacked); err == nil {

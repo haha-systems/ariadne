@@ -129,6 +129,7 @@ cooldown_minutes = 10
 repo = "/path/to/repo"
 routine_agent = "ari"
 frontier_agent = "astra"
+guidance_file = ".ariadne/research/distributed-cognition/AGENTS.md"
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -143,6 +144,9 @@ frontier_agent = "astra"
 	}
 	if proj.RoutineAgent != "ari" || proj.FrontierAgent != "astra" {
 		t.Errorf("unexpected research project config: %+v", proj)
+	}
+	if proj.GuidanceFile != ".ariadne/research/distributed-cognition/AGENTS.md" {
+		t.Errorf("unexpected guidance_file: %q", proj.GuidanceFile)
 	}
 	ari, ok := cfg.AgentProfiles["ari"]
 	if !ok || ari.CostClass != "cheap" || ari.ScarcityClass != "plentiful" {

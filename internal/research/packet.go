@@ -26,13 +26,17 @@ type Packet struct {
 	Question string
 	Evidence []memory.Record
 	Frontier memory.Record
+	// Guidance is the same durable, project-specific instruction text given
+	// to Ari (see AriLoop.Guidance) — Astra needs the scope notice and
+	// team mandate just as much as Ari does.
+	Guidance string
 }
 
 // BuildPacket assembles a Packet from Ghostdive (or whichever memory.Store
 // is configured): the project's current frontier (if any) and the cited
 // evidence records. A missing frontier is not an error — early in a
 // project's life there may be none yet.
-func BuildPacket(ctx context.Context, store memory.Store, project, question string, evidenceRefs []string) (Packet, error) {
+func BuildPacket(ctx context.Context, store memory.Store, project, question string, evidenceRefs []string, guidance string) (Packet, error) {
 	frontier, _ := store.Frontier(ctx, project) // absent frontier is fine, zero value renders as nothing
 
 	var evidence []memory.Record
@@ -48,12 +52,13 @@ func BuildPacket(ctx context.Context, store memory.Store, project, question stri
 		evidence = ev
 	}
 
-	return Packet{Project: project, Question: question, Evidence: evidence, Frontier: frontier}, nil
+	return Packet{Project: project, Question: question, Evidence: evidence, Frontier: frontier, Guidance: guidance}, nil
 }
 
 // Render formats the Packet as bounded-length prompt text.
 func (p Packet) Render() string {
 	var b strings.Builder
+	b.WriteString(buildPreamble(p.Guidance))
 
 	fmt.Fprintf(&b, "GOAL\n\n%s\n\n", p.Question)
 
@@ -69,7 +74,8 @@ func (p Packet) Render() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("TASK\n\nDesign the cheapest experiment that maximally resolves the goal above.\n")
+	b.WriteString("TASK\n\nDesign the cheapest experiment that maximally resolves the goal above.\n\n")
+	b.WriteString(envelopeProtocol)
 	return b.String()
 }
 

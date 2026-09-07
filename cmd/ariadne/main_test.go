@@ -14,7 +14,7 @@ func TestRootCmd_HasExpectedSubcommands(t *testing.T) {
 
 func TestRootCmd_HasExpectedResearchSubtree(t *testing.T) {
 	root := rootCmd()
-	want := [][]string{{"research", "run"}, {"research", "status"}, {"research", "frontier"}}
+	want := [][]string{{"research", "run"}, {"research", "status"}, {"research", "frontier"}, {"research", "guidance"}}
 	for _, path := range want {
 		if cmd, _, err := root.Find(path); err != nil || cmd.Name() != path[len(path)-1] {
 			t.Errorf("expected subcommand %v, err=%v", path, err)

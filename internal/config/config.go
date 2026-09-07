@@ -124,6 +124,11 @@ type ResearchProjectConfig struct {
 	Repo          string `toml:"repo"`
 	RoutineAgent  string `toml:"routine_agent"`
 	FrontierAgent string `toml:"frontier_agent"`
+	// GuidanceFile is durable, project-specific instruction text (the
+	// research team's overall mandate) prepended to every Ari/Astra
+	// prompt. Defaults to .ariadne/research/<project>/AGENTS.md if unset;
+	// a missing file is not an error (guidance is optional).
+	GuidanceFile string `toml:"guidance_file"`
 }
 
 // PersonaConfig describes a named agent persona discovered from .ariadne/personas/<name>/.

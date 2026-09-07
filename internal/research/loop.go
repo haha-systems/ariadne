@@ -8,6 +8,7 @@ package research
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/haha-systems/ariadne/internal/agentprofile"
 	"github.com/haha-systems/ariadne/internal/invocation"
@@ -36,6 +37,13 @@ type AriLoop struct {
 	// Decider — used only for scheduling, never surfaced to prompts.
 	AriProfileName   string
 	AstraProfileName string
+
+	// Guidance is durable, project-specific instruction text (e.g. the
+	// research team's overall mandate) prepended to every Ari and Astra
+	// prompt alongside scopeNotice/envelopeProtocol. Loaded once by the
+	// caller (see cmd/ariadne's guidance-file convention) rather than
+	// re-read every cycle.
+	Guidance string
 }
 
 // Run executes up to maxCycles routine iterations for project, stopping
@@ -67,6 +75,7 @@ func (l *AriLoop) runCycle(ctx context.Context, project string, cycle int) (done
 	if envelope.Summary != "" {
 		l.observe(ctx, project, memory.KindObservation, "ari", envelope.Summary, "ari", nil)
 	}
+	l.applyFrontierUpdate(ctx, project, envelope, "ari")
 
 	switch envelope.Status {
 	case invocation.StatusComplete, invocation.StatusBlocked:
@@ -126,7 +135,7 @@ func (l *AriLoop) handleEscalation(ctx context.Context, project string, cycle in
 // the recursion guard — the outcome is always to log-and-continue, never to
 // invoke a scarce agent recursively. Control returns to Ari either way.
 func (l *AriLoop) invokeAstra(ctx context.Context, project string, cycle int, ariEnvelope invocation.Envelope) {
-	packet, err := BuildPacket(ctx, l.Memory, project, ariEnvelope.EscalationReason, nil)
+	packet, err := BuildPacket(ctx, l.Memory, project, ariEnvelope.EscalationReason, nil, l.Guidance)
 	if err != nil {
 		l.logEvent(invocation.EventInvocationFailed, map[string]any{"project": project, "cycle": cycle, "stage": "build_packet", "error": err.Error()})
 		return
@@ -143,6 +152,7 @@ func (l *AriLoop) invokeAstra(ctx context.Context, project string, cycle int, ar
 	if astraEnvelope.Summary != "" {
 		l.observe(ctx, project, memory.KindDecision, "astra", astraEnvelope.Summary, "astra", nil)
 	}
+	l.applyFrontierUpdate(ctx, project, astraEnvelope, "astra")
 
 	if astraEnvelope.Status == invocation.StatusEscalate {
 		_, err := l.Decider.Decide(ctx, scheduler.DecisionRequest{
@@ -162,10 +172,32 @@ func (l *AriLoop) invokeAstra(ctx context.Context, project string, cycle int, ar
 }
 
 func (l *AriLoop) buildAriPrompt(ctx context.Context, project string) string {
+	var b strings.Builder
+	b.WriteString(buildPreamble(l.Guidance))
+
+	fmt.Fprintf(&b, "Project: %s\n\n", project)
 	if frontier, err := l.Memory.Frontier(ctx, project); err == nil && frontier.Summary != "" {
-		return fmt.Sprintf("Project: %s\n\nCurrent frontier:\n\n%s\n\nContinue routine research work.", project, frontier.Summary)
+		fmt.Fprintf(&b, "Current frontier (from Ghostdive — check this before acting):\n\n%s\n\n", frontier.Summary)
+	} else {
+		b.WriteString("No frontier recorded in Ghostdive yet — this may be the first cycle.\n\n")
 	}
-	return fmt.Sprintf("Project: %s\n\nNo frontier recorded yet. Begin routine research work.", project)
+	b.WriteString("Continue routine research work based on the guidance and frontier above.\n\n")
+	b.WriteString(envelopeProtocol)
+	return b.String()
+}
+
+// applyFrontierUpdate persists envelope.Frontier, if the agent set one, so
+// progress recorded in a structured result actually becomes the durable
+// Ghostdive frontier rather than only living in this invocation's Summary.
+func (l *AriLoop) applyFrontierUpdate(ctx context.Context, project string, envelope invocation.Envelope, agentID string) {
+	if envelope.Frontier == "" {
+		return
+	}
+	if _, err := l.Memory.WriteFrontier(ctx, project, envelope.Frontier, agentID); err != nil {
+		l.logEvent(invocation.EventInvocationFailed, map[string]any{"project": project, "stage": "memory_write_frontier", "error": err.Error()})
+		return
+	}
+	l.logEvent(invocation.EventMemoryWritten, map[string]any{"project": project, "stage": "memory_write_frontier", "agent_id": agentID})
 }
 
 // observe writes a Record and returns it, or nil if the write failed (the

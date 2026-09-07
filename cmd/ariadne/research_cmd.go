@@ -26,7 +26,7 @@ func researchCmd(cfgPath *string) *cobra.Command {
 		Use:   "research",
 		Short: "Run and inspect research workflow projects",
 	}
-	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath))
+	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath), researchGuidanceCmd(cfgPath))
 	return root
 }
 
@@ -111,6 +111,37 @@ func researchFrontierCmd(cfgPath *string) *cobra.Command {
 	}
 }
 
+func researchGuidanceCmd(cfgPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "guidance <project>",
+		Short: "Print the durable guidance text a project's Ari/Astra prompts currently include",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			project := args[0]
+			cfg, err := config.Load(*cfgPath)
+			if err != nil {
+				return err
+			}
+			projCfg, ok := cfg.Research.Projects[project]
+			if !ok {
+				return fmt.Errorf("no research project %q configured — add [research.projects.%s] to ariadne.toml", project, project)
+			}
+			guidance := loadResearchGuidance(projCfg, project)
+			path := projCfg.GuidanceFile
+			if path == "" {
+				path = defaultGuidancePath(project)
+			}
+			w := cmd.OutOrStdout()
+			if guidance == "" {
+				fmt.Fprintf(w, "No guidance file found at %s — prompts use only the built-in scope notice and reporting protocol.\n", path)
+				return nil
+			}
+			fmt.Fprintf(w, "Loaded from %s:\n\n%s\n", path, guidance)
+			return nil
+		},
+	}
+}
+
 func agentsCmd(cfgPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "agents",
@@ -165,6 +196,30 @@ func researchEventsPath(project string) string {
 	return filepath.Join(".ariadne", "research", project, "run.jsonl")
 }
 
+// defaultGuidancePath is the discovery convention for a research project's
+// durable guidance file, mirroring persona AGENTS.md / sandbox.workflow_file
+// for the issue workflow: a file the team maintains once, that every future
+// run picks up automatically.
+func defaultGuidancePath(project string) string {
+	return filepath.Join(".ariadne", "research", project, "AGENTS.md")
+}
+
+// loadResearchGuidance reads a project's guidance file (explicit
+// guidance_file config, or the default convention path). A missing file is
+// not an error — guidance is optional, and absence just means the prompt
+// falls back to the built-in scope notice and envelope protocol alone.
+func loadResearchGuidance(projCfg config.ResearchProjectConfig, project string) string {
+	path := projCfg.GuidanceFile
+	if path == "" {
+		path = defaultGuidancePath(project)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 // buildMemoryStore selects the memory.Store backend: Ghostdive when
 // configured, otherwise the in-memory backend with no external dependency.
 func buildMemoryStore(cfg *config.Config) (memory.Store, error) {
@@ -208,15 +263,21 @@ func buildProviderForProfile(cfg *config.Config, profileName string) (provider.A
 }
 
 // buildResearchLoop wires a research.AriLoop from configuration: agent
-// profiles resolve to providers, invocations run in a single shared
-// ephemeral workspace (research invocations don't require a git worktree —
-// see internal/workspace), QAC resolves to a scheduler.Scheduler, and
-// memory resolves to Ghostdive or the in-memory backend. The returned
-// cleanup func releases the ephemeral workspace and closes the event log.
+// profiles resolve to providers, invocations run in a persistent worktree
+// checked out from projCfg.Repo (see workspace.PersistentGitProvider) so
+// the agent has real project files to examine and so work survives between
+// separate `ariadne research run` invocations — unlike the issue workflow's
+// one-worktree-per-run isolation, research work is iterative across many
+// runs. QAC resolves to a scheduler.Scheduler, and memory resolves to
+// Ghostdive or the in-memory backend. The returned cleanup func only closes
+// the event log — the worktree itself is never torn down automatically.
 func buildResearchLoop(cfg *config.Config, project string) (*research.AriLoop, func(), error) {
 	projCfg, ok := cfg.Research.Projects[project]
 	if !ok {
 		return nil, nil, fmt.Errorf("no research project %q configured — add [research.projects.%s] to ariadne.toml", project, project)
+	}
+	if projCfg.Repo == "" {
+		return nil, nil, fmt.Errorf("research project %q has no repo configured — set [research.projects.%s] repo = \"/path/to/repo\" so Ari/Astra have project files to examine", project, project)
 	}
 
 	ariProvider, err := buildProviderForProfile(cfg, projCfg.RoutineAgent)
@@ -228,10 +289,14 @@ func buildResearchLoop(cfg *config.Config, project string) (*research.AriLoop, f
 		return nil, nil, fmt.Errorf("frontier_agent: %w", err)
 	}
 
-	ws := workspace.EphemeralProvider{}
-	wsHandle, err := ws.Acquire(context.Background(), workspace.KindEphemeral)
+	repoRoot, err := filepath.Abs(projCfg.Repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("acquire workspace: %w", err)
+		return nil, nil, fmt.Errorf("resolve repo path: %w", err)
+	}
+	ws := &workspace.PersistentGitProvider{RepoRoot: repoRoot, Path: filepath.Join(".ariadne", "research", project, "workspace")}
+	wsHandle, err := ws.Acquire(context.Background(), workspace.KindWorktreeBacked)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire research workspace: %w", err)
 	}
 
 	store, err := buildMemoryStore(cfg)
@@ -257,13 +322,14 @@ func buildResearchLoop(cfg *config.Config, project string) (*research.AriLoop, f
 	events := invocation.NewEventWriter(eventsFile, "research-"+project)
 
 	loop := &research.AriLoop{
-		Ari:              invocation.ProviderRunner{Provider: ariProvider, RepoPath: wsHandle.Path},
-		Astra:            invocation.ProviderRunner{Provider: astraProvider, RepoPath: wsHandle.Path},
+		Ari:              invocation.ProviderRunner{Provider: ariProvider, RepoPath: wsHandle.Path, LogWriter: events},
+		Astra:            invocation.ProviderRunner{Provider: astraProvider, RepoPath: wsHandle.Path, LogWriter: events},
 		Decider:          sched,
 		Memory:           store,
 		Events:           events,
 		AriProfileName:   projCfg.RoutineAgent,
 		AstraProfileName: projCfg.FrontierAgent,
+		Guidance:         loadResearchGuidance(projCfg, project),
 	}
 
 	cleanup := func() {

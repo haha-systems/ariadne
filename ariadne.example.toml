@@ -69,13 +69,30 @@ workflow_file = ".ariadne/WORKFLOW.md"
 # max_calls_per_session = 4
 # cooldown_minutes = 10
 #
-# A research project pairs a routine and a frontier agent profile. Run with
-# `ariadne research run <project>`; inspect with `ariadne research status
-# <project>` / `ariadne research frontier <project>` / `ariadne escalations`.
+# A research project pairs a routine and a frontier agent profile against a
+# real repo. Run with `ariadne research run <project>`; inspect with
+# `ariadne research status <project>` / `ariadne research frontier
+# <project>` / `ariadne escalations`.
+#
+# repo is required: Ari/Astra run in a persistent git worktree checked out
+# from it (.ariadne/research/<project>/workspace), reused across separate
+# `research run` invocations rather than recreated each time — so an
+# agent's uncommitted work and experiment artifacts survive between
+# sessions, and the agent actually has project files to examine.
+#
+# Every Ari/Astra prompt always includes a built-in scope notice (this is a
+# research workflow, not the issue workflow — agents are told not to check
+# GitHub/Linear) and the envelope reporting protocol (how to signal
+# continue/escalate/complete/blocked and optionally update the frontier).
+# guidance_file adds your team's durable, project-specific mandate on top of
+# that; it defaults to .ariadne/research/<project>/AGENTS.md if unset.
+# Inspect what's actually loaded with `ariadne research guidance <project>`.
 #
 # [research.projects.distributed-cognition]
+# repo = "/path/to/distributed-cognition-repo"
 # routine_agent = "ari"
 # frontier_agent = "astra"
+# guidance_file = ".ariadne/research/distributed-cognition/AGENTS.md"
 #
 # Shared research memory defaults to an in-process, non-persistent backend.
 # Point at a Ghostdive instance to persist observations/hypotheses/decisions

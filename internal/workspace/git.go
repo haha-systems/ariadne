@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -33,6 +34,44 @@ func (p *GitProvider) Release(ctx context.Context, ws Workspace) error {
 	}
 	return nil
 }
+
+// PersistentGitProvider acquires a single, fixed-path worktree and reuses
+// it across calls instead of creating a fresh one each time. Unlike
+// GitProvider (one isolated worktree per run, torn down on Release), this
+// is for long-lived work — e.g. a research project — where an agent's
+// uncommitted changes and experiment artifacts need to survive between
+// separate `ariadne research run` invocations. Release is deliberately a
+// no-op: the worktree is only ever removed explicitly, never automatically.
+type PersistentGitProvider struct {
+	// RepoRoot is the git repository the worktree is created against.
+	RepoRoot string
+	// Path is the worktree's location — absolute, or relative to RepoRoot.
+	Path string
+}
+
+func (p *PersistentGitProvider) resolvedPath() string {
+	if filepath.IsAbs(p.Path) {
+		return p.Path
+	}
+	return filepath.Join(p.RepoRoot, p.Path)
+}
+
+// Acquire reuses the worktree at Path if it already exists, or creates it
+// (detached at the current HEAD) on first use.
+func (p *PersistentGitProvider) Acquire(ctx context.Context, _ Kind) (Workspace, error) {
+	path := p.resolvedPath()
+	if _, err := os.Stat(path); err == nil {
+		return Workspace{Kind: KindWorktreeBacked, Path: path}, nil
+	}
+	if err := createWorktree(ctx, p.RepoRoot, path); err != nil {
+		return Workspace{}, fmt.Errorf("workspace: create persistent worktree: %w", err)
+	}
+	return Workspace{Kind: KindWorktreeBacked, Path: path}, nil
+}
+
+// Release is a no-op — a persistent worktree is not torn down when a
+// session ends.
+func (p *PersistentGitProvider) Release(context.Context, Workspace) error { return nil }
 
 func createWorktree(ctx context.Context, repoRoot, path string) error {
 	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", path)
