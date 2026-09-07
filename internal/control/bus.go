@@ -252,6 +252,57 @@ func (b *LogBus) Dropped() int {
 	return b.dropped
 }
 
+// Writer returns an io.Writer that publishes an agent's process output into
+// this bus, one entry per line. Wiring a provider's output through it is
+// what keeps each agent's stream independently readable.
+func (b *LogBus) Writer(project, agent, stream string) *LogWriter {
+	return &LogWriter{bus: b, project: project, agent: agent, stream: stream}
+}
+
+// LogWriter splits an agent's output into lines and publishes each one.
+type LogWriter struct {
+	bus     *LogBus
+	project string
+	agent   string
+	stream  string
+
+	mu  sync.Mutex
+	buf []byte
+}
+
+// Write implements io.Writer. A partial line is held until its newline
+// arrives, so a log pane never renders half a line.
+func (w *LogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	var lines []string
+	for {
+		idx := indexByte(w.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		lines = append(lines, string(w.buf[:idx]))
+		w.buf = w.buf[idx+1:]
+	}
+	w.mu.Unlock()
+
+	for _, line := range lines {
+		w.bus.Publish(AgentLogEntry{
+			Project: w.project, Agent: w.agent, Stream: w.stream, Text: line,
+		})
+	}
+	return len(p), nil
+}
+
+func indexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
 func appendBounded[T any](buf []T, item T, max int) []T {
 	buf = append(buf, item)
 	if len(buf) > max {

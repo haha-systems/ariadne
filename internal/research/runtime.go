@@ -3,7 +3,6 @@ package research
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -45,9 +44,7 @@ type Runtime struct {
 	// eventReplay supplies persisted events from previous runs.
 	eventReplay EventReplayer
 
-	// agentInfo holds the static per-agent descriptors (model, provider,
-	// classes) that configuration knows and the loop does not.
-	agentInfo  map[string]control.AgentSnapshot
+	// agentOrder preserves the configured display order of agents.
 	agentOrder []string
 
 	mu sync.Mutex
@@ -146,7 +143,6 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 		eventReplay:   cfg.EventReplay,
 		state:         control.RunStateIdle,
 		agents:        make(map[string]control.AgentSnapshot, len(cfg.Agents)),
-		agentInfo:     make(map[string]control.AgentSnapshot, len(cfg.Agents)),
 		resumeCh:      make(chan struct{}),
 		done:          make(chan struct{}),
 	}
@@ -154,7 +150,6 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 		if a.State == "" {
 			a.State = control.AgentIdle
 		}
-		rt.agentInfo[a.Name] = a
 		rt.agents[a.Name] = a
 		rt.agentOrder = append(rt.agentOrder, a.Name)
 	}
@@ -571,43 +566,23 @@ func (r *Runtime) publishLog(agent, stream, text string) {
 	})
 }
 
-// AgentWriter returns an io.Writer that publishes an agent's process output
-// into the log bus, one entry per line. Wiring a provider's LogWriter
-// through this is what keeps Ari's and Astra's output separable.
-func (r *Runtime) AgentWriter(agent, stream string) *AgentLogWriter {
-	return &AgentLogWriter{runtime: r, agent: agent, stream: stream}
+// AgentWriter returns a writer that publishes an agent's output into the
+// runtime's log bus, tagged with this project.
+func (r *Runtime) AgentWriter(agent, stream string) *control.LogWriter {
+	return r.logs.Writer(r.project, agent, stream)
 }
 
-// AgentLogWriter splits an agent's output into lines and publishes each.
-type AgentLogWriter struct {
-	runtime *Runtime
-	agent   string
-	stream  string
-
-	mu  sync.Mutex
-	buf []byte
-}
-
-// Write implements io.Writer. Partial lines are held until their newline
-// arrives, so a log pane never shows a half-written line.
-func (w *AgentLogWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	w.buf = append(w.buf, p...)
-	var lines []string
-	for {
-		idx := strings.IndexByte(string(w.buf), '\n')
-		if idx < 0 {
-			break
-		}
-		lines = append(lines, string(w.buf[:idx]))
-		w.buf = w.buf[idx+1:]
+// SetDecider attaches the scheduler after construction. The wiring is
+// circular by nature under manual QAC — the scheduler needs the runtime as
+// its Approver, and the runtime needs the scheduler for budget state — so
+// one side is necessarily assigned second.
+func (r *Runtime) SetDecider(decider Decider) {
+	if r.loop != nil {
+		r.loop.Decider = decider
 	}
-	w.mu.Unlock()
-
-	for _, line := range lines {
-		w.runtime.publishLog(w.agent, w.stream, line)
+	if reporter, ok := decider.(budgetReporter); ok {
+		r.budget = reporter
 	}
-	return len(p), nil
 }
 
 func numberOr(ev control.Event, key string, fallback float64) float64 {

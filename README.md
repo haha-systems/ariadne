@@ -155,6 +155,34 @@ ariadne [--config ariadne.toml] <command>
 | `collect-proof --run-id <id>`   | Print the proof bundle for a completed run           |
 | `land --run-id <id>`            | Rebase, re-run CI, and merge a reviewed run          |
 | `cost`                          | Show USD cost summary for all completed runs         |
+| `agents`                        | List configured agent profiles                       |
+| `budget`                        | Show configured QAC escalation budget limits         |
+| `research run <project>`        | Run the Ari -> QAC -> Astra research cycle           |
+| `research tui <project>`        | Watch and steer a research project interactively     |
+| `research status <project>`     | Show a project's frontier and recent events          |
+| `research frontier <project>`   | Print a project's current research frontier          |
+| `research guidance <project>`   | Print the durable guidance a project's prompts use   |
+
+### Interactive research
+
+`ariadne research tui <project>` runs the same research loop as `research run`,
+with a terminal interface over it:
+
+- watch the current frontier, hypotheses, and open questions;
+- follow Ari's and Astra's live output on separate logs;
+- read the structured event timeline;
+- inspect why QAC approved or denied each escalation, with the scoring
+  factors and the budget at the time of the decision;
+- approve (`a`) or deny (`d`) escalations when QAC is in manual mode;
+- steer the programme (`s`) — the instruction is persisted, reaches the next
+  agent turn, and is then marked applied;
+- pause (`p`) and resume (`r`).
+
+Pausing stops the loop at its next cycle boundary rather than killing a
+running agent, so work that has already cost quota is never discarded.
+Quitting the interface does not end the run: you are offered a pause-then-exit
+or a detach. Every one of these operations exists in the runtime, not in the
+interface, so the CLI stays fully capable on its own.
 
 ## Work sources
 

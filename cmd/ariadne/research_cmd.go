@@ -27,7 +27,7 @@ func researchCmd(cfgPath *string) *cobra.Command {
 		Use:   "research",
 		Short: "Run and inspect research workflow projects",
 	}
-	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath), researchGuidanceCmd(cfgPath))
+	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath), researchGuidanceCmd(cfgPath), researchTuiCmd(cfgPath))
 	return root
 }
 
