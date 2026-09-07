@@ -20,6 +20,11 @@ const (
 	KindHypothesis  Kind = "hypothesis"
 	KindDecision    Kind = "decision"
 	KindEscalation  Kind = "escalation"
+	// KindSteering is a user instruction to the research programme. It is
+	// stored in shared memory rather than in an interface's own state so
+	// an instruction survives a UI restart and stays part of the auditable
+	// research record — see control.SteeringRecord.
+	KindSteering Kind = "steering"
 	// KindFrontier marks the single mutable per-project summary record
 	// returned by Frontier/WriteFrontier. It is never produced by Observe.
 	KindFrontier Kind = "frontier"

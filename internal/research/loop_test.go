@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/haha-systems/ariadne/internal/invocation"
@@ -15,13 +16,27 @@ import (
 // scriptedRunner is a hand-written fake invocation.Runner that returns a
 // scripted sequence of envelopes, one per call; the last envelope repeats
 // once the script is exhausted.
+// It is mutex-guarded because the runtime tests drive the loop on a
+// background goroutine while the test goroutine polls what it has done.
 type scriptedRunner struct {
+	mu        sync.Mutex
 	envelopes []invocation.Envelope
 	calls     []invocation.Request
 	err       error
 }
 
+// callCount is the concurrency-safe way to observe progress from a test
+// goroutine while the loop runs.
+func (r *scriptedRunner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
 func (r *scriptedRunner) Invoke(_ context.Context, req invocation.Request) (invocation.Envelope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.calls = append(r.calls, req)
 	if r.err != nil {
 		return invocation.Envelope{}, r.err

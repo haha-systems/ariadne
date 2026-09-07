@@ -40,7 +40,17 @@ type AriLoop struct {
 	Ari, Astra invocation.Runner
 	Decider    Decider
 	Memory     memory.Store
-	Events     *invocation.EventWriter
+	// Events is an EventSink rather than a concrete writer so the same
+	// event can reach the durable JSONL log and any live subscribers at
+	// once (see invocation.MultiSink). Nil disables event logging.
+	Events invocation.EventSink
+
+	// Observer, when set, watches the loop and gates it at cycle
+	// boundaries. Steering, when set, supplies pending user instructions.
+	// Both are optional: with neither, the loop behaves exactly as the CLI
+	// has always run it.
+	Observer Observer
+	Steering SteeringSource
 
 	// AriProfileName/AstraProfileName identify the profiles offered to
 	// Decider — used only for scheduling, never surfaced to prompts.
@@ -112,9 +122,20 @@ func (l *AriLoop) Run(ctx context.Context, project string, maxCycles int) error 
 }
 
 func (l *AriLoop) runCycle(ctx context.Context, project string, cycle int) (done bool, err error) {
+	// The gate comes first, before any work: this is the only point in a
+	// cycle where nothing is in flight, so it is the only safe place to
+	// hold the loop without discarding an invocation that has already cost
+	// real quota.
+	if l.Observer != nil {
+		if err := l.Observer.CycleStarting(ctx, project, cycle); err != nil {
+			return true, err
+		}
+	}
+
 	l.logEvent(invocation.EventResearchCycleStarted, map[string]any{"project": project, "cycle": cycle})
 
-	prompt := l.buildAriPrompt(ctx, project, cycle)
+	steering := l.pendingSteering(ctx, project)
+	prompt := l.buildAriPrompt(ctx, project, cycle, steeringTexts(steering))
 
 	// Recorded as its own event so a run log proves which identity each
 	// invocation was given — the identity-leakage failure was invisible in
@@ -128,11 +149,18 @@ func (l *AriLoop) runCycle(ctx context.Context, project string, cycle int) (done
 		"agent": AgentAri, "project": project, "cycle": cycle,
 		"profile": l.AriProfileName, "model": l.AriModel,
 	})
+	l.notifyAgentStarted(project, AgentAri, "routine research step")
 	envelope, err := l.Ari.Invoke(ctx, invocation.Request{Prompt: prompt, Depth: 0})
 	if err != nil {
+		l.notifyAgentFinished(project, AgentAri, invocation.Envelope{}, err)
 		l.logEvent(invocation.EventInvocationFailed, map[string]any{"agent": AgentAri, "project": project, "cycle": cycle, "error": err.Error()})
 		return false, fmt.Errorf("research: ari invocation: %w", err)
 	}
+	l.notifyAgentFinished(project, AgentAri, envelope, nil)
+
+	// Steering is marked applied only now, once it has actually reached an
+	// agent — see SteeringSource.
+	l.markSteeringApplied(ctx, project, steering, cycle)
 	l.logEvent(invocation.EventAriInvocationCompleted, map[string]any{
 		"agent": AgentAri, "project": project, "cycle": cycle,
 		"profile": l.AriProfileName, "model": l.AriModel,
@@ -273,11 +301,14 @@ func (l *AriLoop) invokeAstra(ctx context.Context, project string, cycle int, re
 		"agent": AgentAstra, "project": project, "cycle": cycle,
 		"profile": l.AstraProfileName, "model": l.AstraModel,
 	})
+	l.notifyAgentStarted(project, AgentAstra, req.Question)
 	astraEnvelope, err := l.Astra.Invoke(ctx, invocation.Request{Prompt: packet.Render(), Depth: 1})
 	if err != nil {
+		l.notifyAgentFinished(project, AgentAstra, invocation.Envelope{}, err)
 		l.logEvent(invocation.EventInvocationFailed, map[string]any{"agent": AgentAstra, "project": project, "cycle": cycle, "error": err.Error()})
 		return nil
 	}
+	l.notifyAgentFinished(project, AgentAstra, astraEnvelope, nil)
 	l.logEvent(invocation.EventAstraInvocationCompleted, map[string]any{
 		"agent": AgentAstra, "project": project, "cycle": cycle,
 		"profile": l.AstraProfileName, "model": l.AstraModel,
@@ -313,7 +344,7 @@ func (l *AriLoop) invokeAstra(ctx context.Context, project string, cycle int, re
 // project guidance, and the durable research context recovered from memory
 // — not from a single frontier summary, so a cycle does not have to
 // re-derive what previous cycles already established.
-func (l *AriLoop) buildAriPrompt(ctx context.Context, project string, cycle int) string {
+func (l *AriLoop) buildAriPrompt(ctx context.Context, project string, cycle int, steering []string) string {
 	rc := LoadContext(ctx, l.Memory, project)
 	l.logEvent(invocation.EventFrontierLoaded, map[string]any{
 		"project": project, "cycle": cycle,
@@ -332,7 +363,60 @@ func (l *AriLoop) buildAriPrompt(ctx context.Context, project string, cycle int)
 		Guidance:       l.Guidance,
 		Context:        rc.Render(),
 		DenialFeedback: feedback,
+		Steering:       steering,
 	})
+}
+
+// pendingSteering fetches undelivered user instructions. A failure to read
+// them is logged and tolerated: losing a steering message is bad, but
+// halting an otherwise-healthy research programme over it is worse.
+func (l *AriLoop) pendingSteering(ctx context.Context, project string) []SteeringMessage {
+	if l.Steering == nil {
+		return nil
+	}
+	msgs, err := l.Steering.Pending(ctx, project)
+	if err != nil {
+		l.logEvent(invocation.EventInvocationFailed, map[string]any{
+			"project": project, "stage": "steering_pending", "error": err.Error(),
+		})
+		return nil
+	}
+	for _, m := range msgs {
+		l.logEvent(invocation.EventSteeringReceived, map[string]any{
+			"project": project, "steering_id": m.ID, "message": m.Message,
+		})
+	}
+	return msgs
+}
+
+func (l *AriLoop) markSteeringApplied(ctx context.Context, project string, msgs []SteeringMessage, cycle int) {
+	if l.Steering == nil || len(msgs) == 0 {
+		return
+	}
+	ids := steeringIDs(msgs)
+	if err := l.Steering.MarkApplied(ctx, project, ids, cycle); err != nil {
+		l.logEvent(invocation.EventInvocationFailed, map[string]any{
+			"project": project, "stage": "steering_apply", "error": err.Error(),
+		})
+		return
+	}
+	for _, id := range ids {
+		l.logEvent(invocation.EventSteeringApplied, map[string]any{
+			"project": project, "steering_id": id, "cycle": cycle,
+		})
+	}
+}
+
+func (l *AriLoop) notifyAgentStarted(project, agent, task string) {
+	if l.Observer != nil {
+		l.Observer.AgentStarted(project, agent, task)
+	}
+}
+
+func (l *AriLoop) notifyAgentFinished(project, agent string, envelope invocation.Envelope, err error) {
+	if l.Observer != nil {
+		l.Observer.AgentFinished(project, agent, envelope, err)
+	}
 }
 
 // persistEnvelope writes a completed invocation's structured result to
@@ -360,6 +444,11 @@ func (l *AriLoop) persistEnvelope(ctx context.Context, project string, envelope 
 	}
 	for _, q := range envelope.OpenQuestions {
 		if _, err := l.observe(ctx, project, memory.KindObservation, SubjectOpenQuestion, q, agentID, nil); err != nil {
+			return err
+		}
+	}
+	for _, c := range envelope.Confounds {
+		if _, err := l.observe(ctx, project, memory.KindObservation, SubjectConfound, c, agentID, nil); err != nil {
 			return err
 		}
 	}

@@ -75,8 +75,13 @@ type Envelope struct {
 	Hypotheses         []string `json:"hypotheses,omitempty"`
 	RejectedHypotheses []string `json:"rejected_hypotheses,omitempty"`
 	OpenQuestions      []string `json:"open_questions,omitempty"`
-	WorkCompleted      string   `json:"work_completed,omitempty"`
-	NextCandidateStep  string   `json:"next_candidate_step,omitempty"`
+	// Confounds are alternative explanations an agent has identified but
+	// not ruled out. They are recorded separately from observations
+	// because the next cycle needs them as standing warnings, not as
+	// findings.
+	Confounds         []string `json:"confounds,omitempty"`
+	WorkCompleted     string   `json:"work_completed,omitempty"`
+	NextCandidateStep string   `json:"next_candidate_step,omitempty"`
 
 	// Escalation carries the structured request behind StatusEscalate.
 	// It may be nil even when Status is StatusEscalate — an older agent

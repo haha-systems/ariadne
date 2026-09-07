@@ -34,6 +34,7 @@ var _ memory.Store = (*Adapter)(nil)
 //	Hypothesis   -> layer=semantic,   predicate=hypothesizes  state=candidate
 //	Decision     -> layer=procedural, predicate=decides       state=accepted
 //	Escalation   -> layer=allostatic, predicate=escalates     state=observed
+//	Steering     -> layer=policy,     predicate=steers        state=observed
 //	Frontier     -> layer=policy,     predicate=current-state state=observed
 //	               subject "frontier:<project>" (reserved; see WriteFrontier)
 //
@@ -113,6 +114,8 @@ func layerAndPredicate(kind memory.Kind) (layer, predicate string, err error) {
 		return "procedural", "decides", nil
 	case memory.KindEscalation:
 		return "allostatic", "escalates", nil
+	case memory.KindSteering:
+		return "policy", "steers", nil
 	default:
 		return "", "", fmt.Errorf("ghostdive: observe: unsupported kind %q (use WriteFrontier for frontier records)", kind)
 	}
@@ -144,6 +147,8 @@ func kindFromLayerPredicate(layer, predicate string) memory.Kind {
 		return memory.KindEscalation
 	case layer == "policy" && predicate == "current-state":
 		return memory.KindFrontier
+	case layer == "policy" && predicate == "steers":
+		return memory.KindSteering
 	default:
 		return memory.Kind(predicate)
 	}

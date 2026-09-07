@@ -528,6 +528,7 @@ func TestAriLoop_StructuredStateWrittenInCycleN_VisibleInCycleNPlus1(t *testing.
 			Hypotheses:         []string{"nonlinearity explains the advantage"},
 			RejectedHypotheses: []string{"sampling noise explains the advantage"},
 			OpenQuestions:      []string{"does the advantage survive a crossed design?"},
+			Confounds:          []string{"both arms share a random seed"},
 			NextCandidateStep:  "run the crossed design",
 		},
 		{Status: invocation.StatusComplete},
@@ -555,6 +556,8 @@ func TestAriLoop_StructuredStateWrittenInCycleN_VisibleInCycleNPlus1(t *testing.
 		"does the advantage survive a crossed design?",
 		"CURRENT EXPERIMENT",
 		"run the crossed design",
+		"KNOWN CONFOUNDS",
+		"both arms share a random seed",
 	} {
 		if !strings.Contains(second, want) {
 			t.Errorf("cycle 1 prompt missing recovered context %q", want)

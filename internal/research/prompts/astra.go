@@ -46,6 +46,7 @@ const astraEnvelope = `REPORTING: Before you finish, write a JSON object to the 
     "hypotheses": ["..."],
     "rejected_hypotheses": ["..."],
     "open_questions": ["..."],
+    "confounds": ["alternative explanations you have identified but not ruled out"],
     "work_completed": "the intervention you delivered",
     "next_candidate_step": "the routine step Ari should take next",
     "frontier": "updated compressed summary of the project's research state"

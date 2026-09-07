@@ -41,6 +41,11 @@ const (
 	EventAstraInvocationStarted   = "astra_invocation_started"
 	EventAstraInvocationCompleted = "astra_invocation_completed"
 	EventControlReturnedToAri     = "control_returned_to_ari"
+	EventSteeringReceived         = "steering_received"
+	EventSteeringApplied          = "steering_applied"
+	EventResearchPaused           = "research_paused"
+	EventResearchResumed          = "research_resumed"
+	EventCommandReceived          = "command_received"
 
 	// Preserved from the pre-v2 supervisor so existing run.jsonl consumers
 	// see no schema change.

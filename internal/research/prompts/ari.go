@@ -69,6 +69,7 @@ const ariEnvelope = `REPORTING: Before you finish, write a JSON object to the fi
     "hypotheses": ["..."],
     "rejected_hypotheses": ["..."],
     "open_questions": ["..."],
+    "confounds": ["alternative explanations you have identified but not ruled out"],
     "work_completed": "the one bounded step you actually performed",
     "next_candidate_step": "the step you would take next cycle",
     "frontier": "updated compressed summary of the project's research state",
@@ -113,7 +114,20 @@ type AriInput struct {
 	// DenialFeedback, when set, explains why the previous cycle's
 	// escalation request was denied, so Ari does not simply re-send it.
 	DenialFeedback string
+	// Steering carries pending user instructions. They are placed after
+	// the research state and scheduler feedback but before the task
+	// instruction, so they can redirect priorities without appearing to
+	// overwrite the record of what has already been established.
+	Steering []string
 }
+
+// steeringPreamble frames user instructions so they adjust priorities
+// rather than rewriting history. A steering message is an instruction about
+// what to do next; it is never evidence, and it must not be able to
+// retroactively un-reject a hypothesis or erase an observation.
+const steeringPreamble = `The user has sent the following instruction(s) for this research programme. Treat them as a change of priority, to be followed on this turn where it is reasonable to do so.
+
+They do not overwrite the project mandate, and they are not evidence: do not use them to revise or discard existing observations, prior evidence, rejected hypotheses, or QAC records. If an instruction conflicts with recorded evidence, follow the instruction's intent and say so in your summary rather than silently rewriting the record.`
 
 // BuildAri assembles Ari's prompt. Identity is asserted first, before any
 // project prose, and re-asserted after the guidance fence — the guidance is
@@ -133,6 +147,17 @@ func BuildAri(in AriInput) string {
 
 	section(&b, "RESEARCH CONTEXT", in.Context)
 	section(&b, "FEEDBACK ON YOUR PREVIOUS ESCALATION REQUEST", in.DenialFeedback)
+
+	if len(in.Steering) > 0 {
+		var steering strings.Builder
+		steering.WriteString(steeringPreamble + "\n\n")
+		for _, msg := range in.Steering {
+			if s := strings.TrimSpace(msg); s != "" {
+				fmt.Fprintf(&steering, "- %s\n", s)
+			}
+		}
+		section(&b, "USER STEERING", steering.String())
+	}
 
 	b.WriteString(ariBoundedTurn + "\n\n")
 	b.WriteString(ariEscalationRules + "\n\n")
