@@ -17,7 +17,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.SetWidth(maxInt(20, m.width-12))
+		m.resizeInput()
 		return m, nil
 
 	case tea.KeyPressMsg:

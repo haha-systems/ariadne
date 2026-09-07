@@ -95,29 +95,69 @@ func (m *Model) renderHeader() string {
 		active = "-"
 	}
 
-	fields := []string{
-		styleTitle.Render(project),
-		statusStyle(s.State).Render(s.State.Display()),
-		fmt.Sprintf("cycle %d", s.Cycle),
-		"agent " + active,
-		"QAC:" + orDash(s.QAC.Mode),
-		m.renderBudget(),
-	}
-	if s.PendingSteering > 0 {
-		fields = append(fields, styleWarn.Render(fmt.Sprintf("steering %d pending", s.PendingSteering)))
+	// Each field carries a priority. When the line does not fit, the
+	// least important fields are dropped rather than the line being cut —
+	// truncating would hide whichever field happened to land last, and
+	// that field is often the escalation notice, the single thing a user
+	// most needs to see.
+	fields := []headerField{
+		{styleTitle.Render(project), 0},
+		{statusStyle(s.State).Render(s.State.Display()), 0},
+		{fmt.Sprintf("cycle %d", s.Cycle), 2},
+		{"agent " + active, 3},
+		{"QAC:" + orDash(s.QAC.Mode), 4},
+		{m.renderBudget(), 3},
 	}
 	if s.QAC.PendingEscalation != nil && s.QAC.PendingEscalation.Decision == control.DecisionPending {
-		fields = append(fields, styleScarce.Render("ESCALATION PENDING"))
+		fields = append(fields, headerField{styleScarce.Render("ESCALATION PENDING"), 1})
+	}
+	if s.PendingSteering > 0 {
+		fields = append(fields, headerField{styleWarn.Render(fmt.Sprintf("steering %d pending", s.PendingSteering)), 4})
 	}
 	if !m.data.live {
-		fields = append(fields, styleMuted.Render("events: not live"))
+		fields = append(fields, headerField{styleMuted.Render("events: not live"), 2})
 	}
-	if m.width >= wideWidth && s.MemoryBackend != "" {
-		fields = append(fields, styleMuted.Render("memory:"+s.MemoryBackend))
+	if s.MemoryBackend != "" {
+		fields = append(fields, headerField{styleMuted.Render("memory:" + s.MemoryBackend), 5})
 	}
 
-	line := strings.Join(fields, styleMuted.Render(" | "))
-	return truncateLine(line, m.width)
+	return fitHeader(fields, m.width)
+}
+
+// headerField is one status field and how readily it may be dropped. A
+// lower priority number means "keep this for longer".
+type headerField struct {
+	text     string
+	priority int
+}
+
+// fitHeader assembles the status line, dropping the least important fields
+// until it fits. Display order is preserved so the line does not reshuffle
+// as the terminal resizes.
+func fitHeader(fields []headerField, width int) string {
+	const sep = " | "
+
+	for cut := 5; cut >= 0; cut-- {
+		var kept []string
+		for _, f := range fields {
+			if f.priority <= cut {
+				kept = append(kept, f.text)
+			}
+		}
+		line := strings.Join(kept, styleMuted.Render(sep))
+		if lipgloss.Width(line) <= width {
+			return line
+		}
+	}
+
+	// Even the essentials do not fit; truncate what is left.
+	var essential []string
+	for _, f := range fields {
+		if f.priority == 0 {
+			essential = append(essential, f.text)
+		}
+	}
+	return truncateLine(strings.Join(essential, styleMuted.Render(sep)), width)
 }
 
 // renderBudget spells out scarce-agent usage, distinguishing an unlimited
@@ -142,7 +182,7 @@ func (m *Model) renderFooter() string {
 	var keys string
 	switch m.mode {
 	case modeSteering, modeCommand, modeDenyReason:
-		return truncateLine(m.input.View()+"   "+styleMuted.Render("enter send  esc cancel"), m.width)
+		return truncateLine(m.input.View()+"   "+styleMuted.Render(inputHint), m.width)
 	case modeHelp:
 		keys = "any key  close help"
 	case modeQuitConfirm:

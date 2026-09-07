@@ -46,7 +46,12 @@ func pane(title string, body string, width, height int, focused bool) string {
 		border = border.BorderForeground(colTitle)
 	}
 
-	inner := width - 4 // borders + horizontal padding
+	// lipgloss Width/Height set the *total* rendered size, borders and
+	// padding included. The usable content area is therefore 4 columns and
+	// 2 rows smaller — get this wrong and the content lipgloss is handed is
+	// wider than the box, so it soft-wraps and each pane silently grows
+	// taller than the layout budgeted for.
+	inner := width - 4
 	if inner < 4 {
 		inner = 4
 	}
@@ -62,13 +67,13 @@ func pane(title string, body string, width, height int, focused bool) string {
 		content += "\n" + body
 	}
 
-	style := border.Width(inner)
+	style := border.Width(width)
 	if height > 0 {
 		bodyHeight := height - 2
 		if bodyHeight < 1 {
 			bodyHeight = 1
 		}
-		style = style.Height(bodyHeight)
+		style = style.Height(height)
 		content = clampLines(content, bodyHeight, inner)
 	}
 	return style.Render(content)

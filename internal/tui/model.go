@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/haha-systems/ariadne/internal/control"
 )
@@ -194,8 +195,20 @@ func (m *Model) startInput(newMode mode, prompt, placeholder string) tea.Cmd {
 	m.input.Reset()
 	m.input.Prompt = prompt
 	m.input.Placeholder = placeholder
-	m.input.SetWidth(maxInt(20, m.width-len(prompt)-6))
+	m.resizeInput()
 	return m.input.Focus()
+}
+
+// inputHint is the trailing help shown beside a prompt. Its width is
+// reserved when sizing the text box, so the hint is never squeezed to an
+// ellipsis by a long input.
+const inputHint = "enter send  esc cancel"
+
+// resizeInput sizes the text box to the space left after its prompt and the
+// trailing hint.
+func (m *Model) resizeInput() {
+	reserved := lipgloss.Width(m.input.Prompt) + lipgloss.Width(inputHint) + 4
+	m.input.SetWidth(maxInt(12, m.width-reserved))
 }
 
 func (m *Model) endInput() {
