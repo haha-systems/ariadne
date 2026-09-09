@@ -84,14 +84,25 @@ func (w *Workflow) syncSession(rs *RunSession) {
 // the configured work source, the router, the supervisor, the proof
 // collector, and the task poller.
 func New(cfg *config.Config) (*Workflow, error) {
+	source, err := buildWorkSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithSource(cfg, source)
+}
+
+// NewWithSource wires a Workflow against a caller-supplied work source. It
+// is how the harness runs ad-hoc tasks: a task typed into the interface
+// goes through the same routing, worktree isolation, supervision, and proof
+// collection as one claimed from an issue tracker, rather than growing a
+// second and less careful way to run an agent.
+func NewWithSource(cfg *config.Config, source worksource.WorkSource) (*Workflow, error) {
 	providers := buildProviders(cfg)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("issueworkflow: no enabled providers configured")
 	}
-
-	source, err := buildWorkSource(cfg)
-	if err != nil {
-		return nil, err
+	if source == nil {
+		return nil, fmt.Errorf("issueworkflow: nil work source")
 	}
 
 	rt := router.NewWithPersonas(

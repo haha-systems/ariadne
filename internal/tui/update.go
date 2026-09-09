@@ -105,6 +105,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applySessionChange(msg.Change)
 		return m, tea.Batch(m.reactToSessionChange(msg.Change), waitForSessionChange(m.sessionCh))
 
+	case TaskStartedMsg:
+		if msg.Err != nil {
+			m.setAlert("could not start task: %v", msg.Err)
+			return m, nil
+		}
+		m.setAlert("queued: %s", msg.Title)
+		return m, fetchSessions(m.ctx, m.host)
+
 	case SessionsClosedMsg:
 		m.setAlert("session updates ended")
 		return m, nil
@@ -187,7 +195,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	switch m.mode {
-	case modeSteering, modeCommand, modeDenyReason:
+	case modeSteering, modeCommand, modeDenyReason, modeNewTask:
 		switch key {
 		case "esc":
 			m.endInput()
@@ -213,7 +221,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleNormalKey(key string) (tea.Model, tea.Cmd) {
 	// The switcher works with no session attached; everything else needs
 	// one, so an empty harness answers with a hint instead of a crash.
-	if !m.attached() && key != "0" && key != "?" && key != "q" && key != "ctrl+c" && key != "esc" {
+	if !m.attached() && key != "0" && key != "?" && key != "q" && key != "ctrl+c" &&
+		key != "esc" && key != "n" && key != "/" {
 		if m.view == viewSessions {
 			return m, m.handleSessionsKey(key)
 		}
@@ -270,7 +279,7 @@ func (m *Model) handleNormalKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startInput(modeSteering, "steer > ", "instruction for the next research turn")
 	case "/":
-		return m, m.startInput(modeCommand, "> ", "/steer … | /pause | /resume | /status")
+		return m, m.startInput(modeCommand, "> ", "/new … | /steer … | /pause | /resume | /sessions")
 
 	case "p":
 		if !m.requireCap(session.CapPauseResume, "pause") {
@@ -396,6 +405,17 @@ func (m *Model) requireCap(c session.Capability, surface string) bool {
 // switcher. It reports whether it consumed the key.
 func (m *Model) sessionsViewKey(key string) (tea.Cmd, bool) {
 	switch key {
+	case "n":
+		// Bound here rather than globally: the agents screen already uses
+		// n to cycle agents, and a key that means two things depending on
+		// which pane has focus is worse than one that means one thing in
+		// one place. /new works from anywhere.
+		if !m.canStart() {
+			m.setAlert("this harness cannot start new work")
+			return nil, true
+		}
+		return m.startInput(modeNewTask, "task > ", "what should the agent do?"), true
+
 	case "enter":
 		desc, ok := m.sessionsScreen.selected(&m.data)
 		if !ok {

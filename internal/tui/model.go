@@ -55,6 +55,9 @@ const (
 	modeSteering
 	modeCommand
 	modeDenyReason
+	// modeNewTask is the prompt for starting ad-hoc work from the
+	// interface, offered only when the host can actually start it.
+	modeNewTask
 	modeHelp
 	modeQuitConfirm
 )
@@ -195,6 +198,16 @@ func (m *Model) attached() bool { return m.controller != nil }
 
 // can reports whether the active session supports a capability.
 func (m *Model) can(c session.Capability) bool { return m.caps.Has(c) }
+
+// canStart reports whether the host can begin new work. A host that only
+// observes must not be offered a key that would spend an invocation.
+func (m *Model) canStart() bool {
+	if m.host == nil {
+		return false
+	}
+	_, ok := session.AsStarter(m.host)
+	return ok
+}
 
 // Init subscribes to the live streams and loads replay context. Both
 // subscriptions are established before the first snapshot so no event
@@ -368,12 +381,18 @@ func (m *Model) submitInput() tea.Cmd {
 		if text == "" {
 			return nil
 		}
-		return sendCommand(m.ctx, m.controller, control.SteerCommand{Message: text})
+		return sendCommand(m.sessionCtx, m.controller, control.SteerCommand{Message: text})
 
 	case modeDenyReason:
-		return sendCommand(m.ctx, m.controller, control.DenyEscalationCommand{
+		return sendCommand(m.sessionCtx, m.controller, control.DenyEscalationCommand{
 			EscalationID: target, Reason: text,
 		})
+
+	case modeNewTask:
+		if text == "" {
+			return nil
+		}
+		return startTask(m.ctx, m.host, text)
 
 	case modeCommand:
 		return m.runSlashCommand(text)
@@ -398,18 +417,32 @@ func (m *Model) runSlashCommand(text string) tea.Cmd {
 			m.setAlert("usage: /steer <instruction>")
 			return nil
 		}
-		return sendCommand(m.ctx, m.controller, control.SteerCommand{Message: rest})
+		return sendCommand(m.sessionCtx, m.controller, control.SteerCommand{Message: rest})
 	case "pause":
-		return sendCommand(m.ctx, m.controller, control.PauseCommand{})
+		return sendCommand(m.sessionCtx, m.controller, control.PauseCommand{})
 	case "resume":
 		return sendCommand(m.ctx, m.controller, control.ResumeCommand{})
 	case "status":
 		m.view = viewResearch
-		return fetchSnapshot(m.ctx, m.controller)
+		return fetchSnapshot(m.sessionCtx, m.controller)
+	case "new", "task":
+		if rest == "" {
+			m.setAlert("usage: /new <what the agent should do>")
+			return nil
+		}
+		return startTask(m.ctx, m.host, rest)
+	case "sessions":
+		m.view = viewSessions
+		return fetchSessions(m.ctx, m.host)
 	default:
 		// Plain text with no recognized verb is a steering message, which
 		// is what a user typing into a research tool almost always means.
-		return sendCommand(m.ctx, m.controller, control.SteerCommand{Message: text})
+		// With nothing attached, or a session that cannot be steered, the
+		// same text is far more likely to be a task.
+		if !m.attached() || !m.can(session.CapSteer) {
+			return startTask(m.ctx, m.host, text)
+		}
+		return sendCommand(m.sessionCtx, m.controller, control.SteerCommand{Message: text})
 	}
 }
 

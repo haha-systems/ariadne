@@ -52,6 +52,14 @@ func harnessCmd(cfgPath *string) *cobra.Command {
 				}
 			}
 
+			// The local lane is what makes the harness a place you start
+			// work, not only a place you watch it. Failing to start it is
+			// reported rather than fatal: watching existing sessions is
+			// still worth doing.
+			if err := h.StartLocalLane(ctx); err != nil {
+				charmlog.Warn("ad-hoc tasks unavailable", "reason", err)
+			}
+
 			if err := tui.RunHarness(ctx, h.Host()); err != nil {
 				return err
 			}

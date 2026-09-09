@@ -101,3 +101,34 @@ func TestAddSessionAppearsInTheHost(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 }
+
+// The harness must be able to start work, not only watch it — and it must
+// do so through the same pipeline, so a task typed into the interface is
+// routed, isolated, and proved like any other.
+func TestStartTaskRequiresALocalLane(t *testing.T) {
+	h, err := harness.New(&config.Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer h.Close() //nolint:errcheck
+
+	if _, err := h.StartTask(context.Background(), "do a thing"); err == nil {
+		t.Fatal("StartTask without a lane succeeded, want an error")
+	}
+}
+
+// A host that cannot start work must be unable to, not merely decline.
+func TestHarnessSatisfiesStarter(t *testing.T) {
+	h, err := harness.New(&config.Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer h.Close() //nolint:errcheck
+
+	if _, ok := session.AsStarter(h); !ok {
+		t.Fatal("harness does not satisfy session.Starter")
+	}
+	if _, ok := session.AsStarter(session.NewRegistry()); ok {
+		t.Fatal("a bare registry must not be able to start work")
+	}
+}

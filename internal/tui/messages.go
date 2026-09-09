@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -183,3 +184,29 @@ func waitForSessionChange(ch <-chan session.Change) tea.Cmd {
 		return SessionChangeMsg{Change: change}
 	}
 }
+
+// TaskStartedMsg reports the outcome of submitting an ad-hoc task.
+type TaskStartedMsg struct {
+	Title string
+	Err   error
+}
+
+// startTask queues a task off the event loop. The run itself appears as a
+// session when the workflow claims it, which is why this only reports that
+// the task was accepted.
+func startTask(ctx context.Context, host session.Host, prompt string) tea.Cmd {
+	starter, ok := session.AsStarter(host)
+	if !ok {
+		return func() tea.Msg {
+			return TaskStartedMsg{Err: errNoStarter}
+		}
+	}
+	return func() tea.Msg {
+		title, err := starter.StartTask(ctx, prompt)
+		return TaskStartedMsg{Title: title, Err: err}
+	}
+}
+
+// errNoStarter is returned when the host cannot begin work at all — a
+// read-only interface, or one attached to a single existing session.
+var errNoStarter = errors.New("this harness cannot start new work")

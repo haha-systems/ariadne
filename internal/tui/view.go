@@ -196,7 +196,7 @@ func (m *Model) renderBudget() string {
 func (m *Model) renderFooter() string {
 	var keys string
 	switch m.mode {
-	case modeSteering, modeCommand, modeDenyReason:
+	case modeSteering, modeCommand, modeDenyReason, modeNewTask:
 		return truncateLine(m.input.View()+"   "+styleMuted.Render(inputHint), m.width)
 	case modeHelp:
 		keys = "any key  close help"
@@ -212,7 +212,7 @@ func (m *Model) renderFooter() string {
 		}
 		if m.view == viewSessions {
 			if m.width >= mediumWidth {
-				keys = "j/k move  enter attach  1-5 session views  ? help  q quit"
+				keys = "j/k move  enter attach  n new task  1-5 session views  ? help  q quit"
 			} else {
 				keys = "j/k  enter attach  ? help  q quit"
 			}
@@ -244,8 +244,9 @@ func (m *Model) renderHelp(height int) string {
 		"  enter             Select; on Sessions, attach to the highlighted one",
 		"  esc               Back, or dismiss an alert",
 		"",
+		"  n            New task (on the session list); /new works anywhere",
 		"  s            Steer: send an instruction to the next research turn",
-		"  /            Command: /steer … /pause /resume /status",
+		"  /            Command: /new … /steer … /pause /resume /sessions",
 		"",
 		"  a            Approve the pending escalation (manual QAC only)",
 		"  d            Deny it, with an optional reason",

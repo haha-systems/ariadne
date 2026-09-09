@@ -74,7 +74,7 @@ func (s *sessionsScreen) view(d *data, activeID string, width, height int, focus
 
 func (s *sessionsScreen) listLines(d *data, activeID string, width, rows int) string {
 	if len(d.sessions) == 0 {
-		return styleMuted.Render("no sessions yet — runs appear here as they start")
+		return styleMuted.Render("no sessions yet — press n to start one")
 	}
 	if rows < 1 {
 		rows = 1
@@ -152,7 +152,7 @@ func (s *sessionsScreen) detailLines(d *data, width int) string {
 		lines = append(lines, "", styleErr.Render("error: "+truncateLine(desc.LastError, maxInt(10, width-7))))
 	}
 
-	lines = append(lines, "", styleMuted.Render("enter attach"))
+	lines = append(lines, "", styleMuted.Render("enter attach   n new task"))
 	return strings.Join(lines, "\n")
 }
 

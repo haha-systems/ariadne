@@ -27,6 +27,12 @@ Every unit of agent work is a **session**: a claimed issue being executed in
 a worktree, or a research programme cycling under QAC. Press `0` for the
 session list, `enter` to attach, `1`–`5` for that session's views.
 
+You can also start work here. Press `n` on the session list (or `/new …`
+from anywhere), describe the task in prose, and it runs — routed to a
+provider, isolated in a worktree, supervised and proved exactly like a task
+claimed from an issue tracker. There is no second, looser path for running
+an agent.
+
 A session declares which surfaces it has, and the interface offers only
 those. A research programme is steerable, pausable, and has memory and
 escalations; an issue run streams its output and has none of those, so
@@ -40,7 +46,7 @@ pausing never kills an invocation that has already cost real quota.
 | Command | What it does |
 |---------|--------------|
 | `ariadne` | Open the harness over every session |
-| `ariadne --no-poll` | Open the harness without polling for new issues |
+| `ariadne --no-poll` | Open the harness for ad-hoc tasks only, without polling for issues |
 | `ariadne run` | Headless polling loop, no interface — for CI and daemons |
 | `ariadne research run <project>` | Start a research programme |
 | `ariadne research tui <project>` | Attach to one research programme |

@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -299,5 +301,118 @@ func TestSingleControllerEntryPointStillAttaches(t *testing.T) {
 	}
 	if !m.can(session.CapSteer) || !m.can(session.CapMemory) {
 		t.Fatal("a single research controller lost its capabilities")
+	}
+}
+
+// startableHost is a Host that can also begin work.
+type startableHost struct {
+	*session.Registry
+	mu       sync.Mutex
+	prompts  []string
+	startErr error
+}
+
+func (h *startableHost) StartTask(_ context.Context, prompt string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.startErr != nil {
+		return "", h.startErr
+	}
+	h.prompts = append(h.prompts, prompt)
+	return prompt, nil
+}
+
+func (h *startableHost) submitted() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.prompts...)
+}
+
+func TestNewTaskPromptStartsWork(t *testing.T) {
+	host := &startableHost{Registry: session.NewRegistry()}
+	m := NewHarness(context.Background(), host)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	runCmd(t, m, m.Init())
+
+	press(t, m, "n")
+	if m.mode != modeNewTask {
+		t.Fatalf("mode = %v, want the new-task prompt", m.mode)
+	}
+
+	typeText(t, m, "fix the login redirect")
+	press(t, m, "enter")
+
+	got := host.submitted()
+	if len(got) != 1 || got[0] != "fix the login redirect" {
+		t.Fatalf("submitted = %v, want the typed task", got)
+	}
+	if !strings.Contains(m.alert, "queued") {
+		t.Fatalf("alert = %q, want confirmation the task was queued", m.alert)
+	}
+}
+
+// /new must work from anywhere, since n is only bound on the session list.
+func TestSlashNewStartsWorkFromAnyView(t *testing.T) {
+	host := &startableHost{Registry: session.NewRegistry()}
+	m := NewHarness(context.Background(), host)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	runCmd(t, m, m.Init())
+
+	press(t, m, "/")
+	typeText(t, m, "/new add retry backoff")
+	press(t, m, "enter")
+
+	got := host.submitted()
+	if len(got) != 1 || got[0] != "add retry backoff" {
+		t.Fatalf("submitted = %v, want the task from /new", got)
+	}
+}
+
+// A host that only observes must not offer a key that spends an invocation.
+func TestObserveOnlyHostRefusesToStartWork(t *testing.T) {
+	m, _, _, _ := newHarnessModel(t)
+
+	if m.canStart() {
+		t.Fatal("a bare registry host reports that it can start work")
+	}
+
+	m.alert = ""
+	press(t, m, "0")
+	press(t, m, "n")
+	if m.mode == modeNewTask {
+		t.Fatal("an observe-only host opened the new-task prompt")
+	}
+	if !strings.Contains(m.alert, "cannot start") {
+		t.Fatalf("alert = %q, want an explanation that work cannot be started", m.alert)
+	}
+}
+
+// n must keep meaning "next agent" on the agents screen.
+func TestNewTaskKeyDoesNotShadowAgentCycling(t *testing.T) {
+	host := &startableHost{Registry: session.NewRegistry()}
+	desc := session.Descriptor{ID: "r", Kind: session.KindResearch, Title: "r", State: control.RunStateRunning}
+	adapted, err := session.Adapt(desc, session.ResearchCapabilities(), newFakeController())
+	if err != nil {
+		t.Fatalf("Adapt: %v", err)
+	}
+	if err := host.Register(desc, adapted); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	m := NewHarness(context.Background(), host)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	runCmd(t, m, m.Init())
+
+	m.Update(AgentLogMsg{Entry: control.AgentLogEntry{Agent: "ari", Text: "ari-line", Time: time.Now()}})
+	m.Update(AgentLogMsg{Entry: control.AgentLogEntry{Agent: "astra", Text: "astra-line", Time: time.Now()}})
+
+	press(t, m, "2")
+	press(t, m, "n")
+
+	if m.mode == modeNewTask {
+		t.Fatal("n opened the new-task prompt on the agents screen, shadowing agent cycling")
+	}
+	if !strings.Contains(m.render(), "astra-line") {
+		t.Fatal("n did not cycle to the next agent's log")
 	}
 }
