@@ -66,6 +66,8 @@ func (m *Model) renderBody(height int) string {
 	}
 
 	switch m.view {
+	case viewSessions:
+		return m.sessionsScreen.view(&m.data, m.activeID, m.width, height, m.focus)
 	case viewAgents:
 		return m.agents.view(&m.data, m.width, height, m.focus)
 	case viewTimeline:
@@ -84,6 +86,16 @@ func (m *Model) renderBody(height int) string {
 // colour to convey meaning.
 func (m *Model) renderHeader() string {
 	s := m.data.snapshot
+
+	if !m.attached() {
+		// With nothing attached the research fields would all be empty or
+		// zero, which reads as a broken run rather than an idle harness.
+		return fitHeader([]headerField{
+			{styleTitle.Render("ariadne"), 0},
+			{fmt.Sprintf("%d sessions", len(m.data.sessions)), 0},
+			{styleMuted.Render("no session attached"), 1},
+		}, m.width)
+	}
 
 	project := s.Project
 	if project == "" {
@@ -119,6 +131,9 @@ func (m *Model) renderHeader() string {
 	}
 	if s.MemoryBackend != "" {
 		fields = append(fields, headerField{styleMuted.Render("memory:" + s.MemoryBackend), 5})
+	}
+	if n := len(m.data.sessions); n > 1 {
+		fields = append(fields, headerField{fmt.Sprintf("%d sessions", n), 1})
 	}
 
 	return fitHeader(fields, m.width)
@@ -189,11 +204,18 @@ func (m *Model) renderFooter() string {
 		keys = "p pause and exit   d detach and leave running   esc cancel"
 	default:
 		if m.width >= wideWidth {
-			keys = "1-5 views  tab focus  j/k move  enter select  s steer  / command  a approve  d deny  p pause  r resume  ? help  q quit"
+			keys = "0 sessions  1-5 views  tab focus  j/k move  enter select  s steer  / command  a approve  d deny  p pause  r resume  ? help  q quit"
 		} else if m.width >= mediumWidth {
-			keys = "1-5 views  tab  j/k  s steer  a/d qac  p/r pause  ? help  q quit"
+			keys = "0 sessions  1-5 views  tab  j/k  s steer  a/d qac  p/r pause  ? help  q quit"
 		} else {
-			keys = "1-5 views  s steer  ? help  q quit"
+			keys = "0 sessions  1-5 views  s steer  ? help  q quit"
+		}
+		if m.view == viewSessions {
+			if m.width >= mediumWidth {
+				keys = "j/k move  enter attach  1-5 session views  ? help  q quit"
+			} else {
+				keys = "j/k  enter attach  ? help  q quit"
+			}
 		}
 	}
 	return styleMuted.Render(truncateLine(keys, m.width))
@@ -210,6 +232,7 @@ func (m *Model) renderHelp(height int) string {
 	lines := []string{
 		"KEYS",
 		"",
+		"  0            Sessions: every run this harness knows about",
 		"  1            Research overview",
 		"  2            Agents and live logs",
 		"  3            Timeline of runtime events",
@@ -218,7 +241,7 @@ func (m *Model) renderHelp(height int) string {
 		"",
 		"  tab / shift-tab   Move focus between panes",
 		"  j / k, up / down  Move within a list",
-		"  enter             Select; in Agents, follow the chosen agent",
+		"  enter             Select; on Sessions, attach to the highlighted one",
 		"  esc               Back, or dismiss an alert",
 		"",
 		"  s            Steer: send an instruction to the next research turn",
@@ -232,6 +255,10 @@ func (m *Model) renderHelp(height int) string {
 		"  q            Quit",
 		"",
 		"NOTES",
+		"",
+		"  Every kind of run — a claimed issue, a research programme — is a",
+		"  session. Press 0 to switch between them. A session offers only",
+		"  the surfaces it actually has: an issue run has no memory or QAC.",
 		"",
 		"  Pausing never kills a running agent. It stops the loop at the",
 		"  next cycle boundary, so work already paid for is not discarded.",
@@ -248,7 +275,7 @@ func (m *Model) renderHelp(height int) string {
 func (m *Model) renderQuitConfirm(height int) string {
 	lines := []string{
 		"",
-		styleTitle.Render("  Research is still running."),
+		styleTitle.Render("  This session is still running."),
 		"",
 		"  p    Pause at the next safe boundary, then exit.",
 		"       The current invocation finishes; nothing is discarded.",

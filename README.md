@@ -1,6 +1,49 @@
 # Ariadne
 
-Ariadne is a multi-provider coding agent orchestrator. It polls a work source (GitHub Issues or Linear), dispatches tasks to one or more AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode, or a custom binary), and posts proof-of-work summaries back to the originating issue.
+Ariadne is a multi-provider coding agent orchestrator. It polls a work source (GitHub Issues or Linear), dispatches tasks to one or more AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode, or a custom binary), and posts proof-of-work summaries back to the originating issue. It also runs research programmes under a quota-aware escalation policy.
+
+Both show up in one place. Run `ariadne` with no arguments:
+
+```
+ariadne
+```
+
+```
+ariadne | 2 sessions | no session attached
+╭─ SESSIONS ────────────────────────────────╮╭─ SESSION DETAIL ─────────╮
+│ >   ● ISSUE     fix login redirect        ││ fix login redirect       │
+│     ● RESEARCH  arachne     cycle 14 · ari││ issue:run_88             │
+│                                           ││                          │
+│                                           ││ kind     ISSUE           │
+│                                           ││ state    RUNNING         │
+│                                           ││ doing    running on claude│
+╰───────────────────────────────────────────╯╰──────────────────────────╯
+j/k move  enter attach  1-5 session views  ? help  q quit
+```
+
+## The harness
+
+Every unit of agent work is a **session**: a claimed issue being executed in
+a worktree, or a research programme cycling under QAC. Press `0` for the
+session list, `enter` to attach, `1`–`5` for that session's views.
+
+A session declares which surfaces it has, and the interface offers only
+those. A research programme is steerable, pausable, and has memory and
+escalations; an issue run streams its output and has none of those, so
+pressing `s` on one tells you it has no steering rather than appearing to
+work and doing nothing.
+
+Quitting the interface does not end the work. On quit you choose between
+pausing at the next safe boundary or detaching and leaving the run going —
+pausing never kills an invocation that has already cost real quota.
+
+| Command | What it does |
+|---------|--------------|
+| `ariadne` | Open the harness over every session |
+| `ariadne --no-poll` | Open the harness without polling for new issues |
+| `ariadne run` | Headless polling loop, no interface — for CI and daemons |
+| `ariadne research run <project>` | Start a research programme |
+| `ariadne research tui <project>` | Attach to one research programme |
 
 ## How it works
 

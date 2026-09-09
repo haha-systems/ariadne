@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/haha-systems/ariadne/internal/control"
+	"github.com/haha-systems/ariadne/internal/session"
 )
 
 // view identifies a top-level screen.
@@ -21,6 +22,9 @@ const (
 	viewTimeline
 	viewEscalations
 	viewMemory
+	// viewSessions is the switcher. It is last in the iota so the
+	// numbered shortcuts for the per-session screens keep their meaning.
+	viewSessions
 	viewCount
 )
 
@@ -36,6 +40,8 @@ func (v view) String() string {
 		return "Escalations"
 	case viewMemory:
 		return "Memory"
+	case viewSessions:
+		return "Sessions"
 	default:
 		return "?"
 	}
@@ -64,6 +70,10 @@ type data struct {
 	memory      control.MemoryView
 	steering    []control.SteeringRecord
 
+	// sessions is the harness's view of every session the host knows
+	// about, refreshed from the host's change stream.
+	sessions []session.Descriptor
+
 	// live reports whether the event subscription is still open.
 	live bool
 }
@@ -76,7 +86,24 @@ const maxBuffered = 2000
 // routes messages, owns shared data, and delegates rendering to screens.
 type Model struct {
 	ctx        context.Context
-	controller control.ResearchController
+	controller session.Controller
+
+	// host is the set of sessions the harness can switch between. A
+	// command that attached to exactly one session supplies a single-entry
+	// host, so there is only ever one code path for opening a session.
+	host session.Host
+
+	// activeID is the session the per-session screens are showing.
+	activeID string
+	// caps is the active session's capability set. Screens and keys are
+	// gated on it rather than on the session's kind, so a new workflow
+	// never means editing a switch in the interface.
+	caps session.Capabilities
+
+	// sessionCancel tears down the previous session's subscriptions when
+	// the user switches. Without it, switching would leak a goroutine and
+	// a channel per visited session.
+	sessionCancel context.CancelFunc
 
 	width, height int
 
@@ -85,11 +112,12 @@ type Model struct {
 	data  data
 	focus int
 
-	research    researchScreen
-	agents      agentsScreen
-	timeline    timelineScreen
-	escalations escalationsScreen
-	memory      memoryScreen
+	sessionsScreen sessionsScreen
+	research       researchScreen
+	agents         agentsScreen
+	timeline       timelineScreen
+	escalations    escalationsScreen
+	memory         memoryScreen
 
 	input textinput.Model
 
@@ -103,53 +131,164 @@ type Model struct {
 
 	// The live channels are retained so each received message can re-arm
 	// the next receive.
-	eventCh <-chan control.Event
-	logCh   <-chan control.AgentLogEntry
+	eventCh   <-chan control.Event
+	logCh     <-chan control.AgentLogEntry
+	sessionCh <-chan session.Change
+
+	// sessionCtx scopes the active session's reads and subscriptions.
+	sessionCtx context.Context
 }
 
-// New constructs a Model over a controller.
+// New constructs a Model over a single research controller. It is the
+// pre-harness entry point, preserved because attaching to one known session
+// is still the common case from the CLI.
 func New(ctx context.Context, controller control.ResearchController) *Model {
+	desc := session.Descriptor{ID: "research", Kind: session.KindResearch, Title: "research"}
+	adapted, err := session.Adapt(desc, session.ResearchCapabilities(), controller)
+	if err != nil {
+		// Adapt only fails on a nil controller or empty ID, neither of
+		// which this call site can produce.
+		panic("tui: adapting controller: " + err.Error())
+	}
+
+	m := newModel(ctx)
+	m.controller = adapted
+	m.activeID = desc.ID
+	m.caps = adapted.Capabilities()
+
+	if host, hostErr := session.Single(desc, adapted); hostErr == nil {
+		m.host = host
+	}
+	return m
+}
+
+// NewHarness constructs a Model over a host of many sessions. It opens on
+// the switcher, because with more than one session running the first
+// question is always which one you are looking at.
+func NewHarness(ctx context.Context, host session.Host) *Model {
+	m := newModel(ctx)
+	m.host = host
+	m.view = viewSessions
+	return m
+}
+
+func newModel(ctx context.Context) *Model {
 	input := textinput.New()
 	input.Prompt = "steer > "
 	input.SetWidth(60)
 
 	return &Model{
-		ctx:        ctx,
-		controller: controller,
-		view:       viewResearch,
-		input:      input,
-		width:      80,
-		height:     24,
-		data:       data{live: true},
-		agents:     newAgentsScreen(),
+		ctx:    ctx,
+		view:   viewResearch,
+		input:  input,
+		width:  80,
+		height: 24,
+		data:   data{live: true},
+		agents: newAgentsScreen(),
 	}
 }
+
+// attached reports whether a session is currently open. Every per-session
+// read and command checks it, so the harness sitting on an empty switcher
+// cannot dereference a controller that is not there.
+func (m *Model) attached() bool { return m.controller != nil }
+
+// can reports whether the active session supports a capability.
+func (m *Model) can(c session.Capability) bool { return m.caps.Has(c) }
 
 // Init subscribes to the live streams and loads replay context. Both
 // subscriptions are established before the first snapshot so no event
 // occurring during startup is missed.
 func (m *Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{tick()}
+
+	if m.host != nil {
+		cmds = append(cmds, fetchSessions(m.ctx, m.host))
+		if ch, err := m.host.Watch(m.ctx); err == nil {
+			cmds = append(cmds, waitForSessionChange(ch))
+			m.sessionCh = ch
+		}
+	}
+	if m.attached() {
+		cmds = append(cmds, m.attachCmds()...)
+	}
+	return tea.Batch(cmds...)
+}
+
+// attachCmds are the reads and subscriptions for the active session. They
+// are split out of Init because switching sessions has to do exactly the
+// same work again against a different controller.
+//
+// Optional reads are issued only when the session declares the capability,
+// so switching to an issue run does not fill the alert area with
+// "memory unavailable" for a session that was never going to have memory.
+func (m *Model) attachCmds() []tea.Cmd {
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.sessionCancel = cancel
+	m.sessionCtx = ctx
+
 	cmds := []tea.Cmd{
-		fetchHistory(m.ctx, m.controller, 500),
-		fetchSnapshot(m.ctx, m.controller),
-		fetchEscalations(m.ctx, m.controller),
-		fetchMemory(m.ctx, m.controller),
-		fetchSteering(m.ctx, m.controller),
-		tick(),
+		fetchHistory(ctx, m.controller, 500),
+		fetchSnapshot(ctx, m.controller),
+	}
+	if m.can(session.CapEscalations) {
+		cmds = append(cmds, fetchEscalations(ctx, m.controller))
+	}
+	if m.can(session.CapMemory) {
+		cmds = append(cmds, fetchMemory(ctx, m.controller))
+	}
+	if m.can(session.CapSteer) {
+		cmds = append(cmds, fetchSteering(ctx, m.controller))
 	}
 
-	if ch, err := m.controller.Subscribe(m.ctx); err == nil {
+	if ch, err := m.controller.Subscribe(ctx); err == nil {
 		cmds = append(cmds, waitForEvent(ch))
 		m.eventCh = ch
 	} else {
 		m.data.live = false
 		m.alert = "live events unavailable: " + err.Error()
 	}
-	if ch, err := m.controller.SubscribeLogs(m.ctx); err == nil {
+	if ch, err := m.controller.SubscribeLogs(ctx); err == nil {
 		cmds = append(cmds, waitForLog(ch))
 		m.logCh = ch
 	}
-	return tea.Batch(cmds...)
+	return cmds
+}
+
+// attach switches the per-session screens to a different session. The
+// previous session's subscriptions are cancelled and its buffered data
+// dropped, so the timeline and log panes never blend two sessions together.
+func (m *Model) attach(id string) tea.Cmd {
+	if m.host == nil {
+		return nil
+	}
+	controller, err := m.host.Open(m.ctx, id)
+	if err != nil {
+		m.setAlert("cannot open session %s: %v", id, err)
+		return nil
+	}
+
+	if m.sessionCancel != nil {
+		m.sessionCancel()
+		m.sessionCancel = nil
+	}
+
+	m.controller = controller
+	m.activeID = id
+	m.caps = controller.Capabilities()
+
+	sessions := m.data.sessions
+	m.data = data{live: true, sessions: sessions}
+	m.eventCh, m.logCh = nil, nil
+	m.agents = newAgentsScreen()
+	m.alert = ""
+
+	// Land on the session's own status view: the user picked a session to
+	// look at it, not to stay on the list.
+	m.view = viewResearch
+	m.focus = 0
+
+	return tea.Batch(m.attachCmds()...)
 }
 
 // setAlert records a recoverable error for the alert area.

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ariadne/internal/control"
+	"github.com/haha-systems/ariadne/internal/session"
 )
 
 // Messages are the only way runtime data enters the Bubble Tea model.
@@ -77,28 +78,28 @@ func tick() tea.Cmd {
 }
 
 // fetchSnapshot reads the current projection off the event loop.
-func fetchSnapshot(ctx context.Context, c control.ResearchController) tea.Cmd {
+func fetchSnapshot(ctx context.Context, c session.Controller) tea.Cmd {
 	return func() tea.Msg {
 		snap, err := c.Snapshot(ctx)
 		return SnapshotMsg{Snapshot: snap, Err: err}
 	}
 }
 
-func fetchEscalations(ctx context.Context, c control.ResearchController) tea.Cmd {
+func fetchEscalations(ctx context.Context, c session.Controller) tea.Cmd {
 	return func() tea.Msg {
 		esc, err := c.Escalations(ctx, 200)
 		return EscalationsMsg{Escalations: esc, Err: err}
 	}
 }
 
-func fetchMemory(ctx context.Context, c control.ResearchController) tea.Cmd {
+func fetchMemory(ctx context.Context, c session.Controller) tea.Cmd {
 	return func() tea.Msg {
 		view, err := c.Memory(ctx)
 		return MemoryMsg{View: view, Err: err}
 	}
 }
 
-func fetchSteering(ctx context.Context, c control.ResearchController) tea.Cmd {
+func fetchSteering(ctx context.Context, c session.Controller) tea.Cmd {
 	return func() tea.Msg {
 		records, err := c.Steering(ctx)
 		return SteeringMsg{Records: records, Err: err}
@@ -107,7 +108,7 @@ func fetchSteering(ctx context.Context, c control.ResearchController) tea.Cmd {
 
 // fetchHistory replays recent persisted events and buffered logs so the
 // interface opens with context instead of a blank screen.
-func fetchHistory(ctx context.Context, c control.ResearchController, limit int) tea.Cmd {
+func fetchHistory(ctx context.Context, c session.Controller, limit int) tea.Cmd {
 	return func() tea.Msg {
 		events, err := c.RecentEvents(ctx, limit)
 		logs, logErr := c.AgentLog(ctx, "", limit)
@@ -121,7 +122,7 @@ func fetchHistory(ctx context.Context, c control.ResearchController, limit int) 
 // sendCommand submits a command off the event loop. Update never blocks on
 // the runtime, so a command that has to touch memory or wake a scheduler
 // cannot stall a keystroke.
-func sendCommand(ctx context.Context, c control.ResearchController, cmd control.ResearchCommand) tea.Cmd {
+func sendCommand(ctx context.Context, c session.Controller, cmd control.ResearchCommand) tea.Cmd {
 	return func() tea.Msg {
 		err := c.Send(ctx, cmd)
 		return CommandResultMsg{Command: control.CommandName(cmd), Err: err}
@@ -148,5 +149,37 @@ func waitForLog(ch <-chan control.AgentLogEntry) tea.Cmd {
 			return LogsClosedMsg{}
 		}
 		return AgentLogMsg{Entry: entry}
+	}
+}
+
+// SessionsMsg carries the host's current session list.
+type SessionsMsg struct {
+	Sessions []session.Descriptor
+	Err      error
+}
+
+// SessionChangeMsg carries one mutation of the host's session set.
+type SessionChangeMsg struct{ Change session.Change }
+
+// SessionsClosedMsg reports that the host's change stream ended.
+type SessionsClosedMsg struct{}
+
+// fetchSessions reads the session list off the event loop.
+func fetchSessions(ctx context.Context, h session.Host) tea.Cmd {
+	return func() tea.Msg {
+		list, err := h.List(ctx)
+		return SessionsMsg{Sessions: list, Err: err}
+	}
+}
+
+// waitForSessionChange bridges the host's change stream into the event
+// loop, re-arming on each receive like the event and log streams.
+func waitForSessionChange(ch <-chan session.Change) tea.Cmd {
+	return func() tea.Msg {
+		change, ok := <-ch
+		if !ok {
+			return SessionsClosedMsg{}
+		}
+		return SessionChangeMsg{Change: change}
 	}
 }

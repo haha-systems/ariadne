@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ariadne/internal/control"
+	"github.com/haha-systems/ariadne/internal/session"
 )
 
 // Run starts the interface against a controller and blocks until the user
@@ -26,6 +27,24 @@ func Run(ctx context.Context, controller control.ResearchController) error {
 	}
 
 	model := New(ctx, controller)
+	program := tea.NewProgram(model, tea.WithContext(ctx))
+
+	if _, err := program.Run(); err != nil {
+		return fmt.Errorf("tui: %w", err)
+	}
+	return nil
+}
+
+// RunHarness starts the interface over a host of sessions and blocks until
+// the user quits. Like Run, it never owns any session's loop: whoever
+// started a run stops it, which is what makes detaching safe and what lets
+// the same harness attach to work it did not start.
+func RunHarness(ctx context.Context, host session.Host) error {
+	if host == nil {
+		return fmt.Errorf("tui: nil session host")
+	}
+
+	model := NewHarness(ctx, host)
 	program := tea.NewProgram(model, tea.WithContext(ctx))
 
 	if _, err := program.Run(); err != nil {
