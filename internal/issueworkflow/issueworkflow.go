@@ -22,6 +22,7 @@ import (
 	"github.com/haha-systems/ariadne/internal/proof"
 	"github.com/haha-systems/ariadne/internal/provider"
 	"github.com/haha-systems/ariadne/internal/router"
+	"github.com/haha-systems/ariadne/internal/session"
 	"github.com/haha-systems/ariadne/internal/supervisor"
 	"github.com/haha-systems/ariadne/internal/worksource"
 )
@@ -35,20 +36,73 @@ type Workflow struct {
 	source     worksource.WorkSource
 	poller     *worksource.TaskPoller
 	hooks      []string
+
+	// sessions publishes each run to the harness. It is optional: with no
+	// registry the workflow behaves exactly as it did before sessions
+	// existed, which keeps `ariadne run` usable headlessly.
+	sessions *session.Registry
+}
+
+// WithSessions attaches a session registry so each run appears in the
+// harness alongside every other kind of session.
+func (w *Workflow) WithSessions(r *session.Registry) *Workflow {
+	w.sessions = r
+	return w
+}
+
+// beginSession registers a run with the harness and returns it, or nil when
+// no registry is attached. Registration failure is never fatal: losing an
+// entry in a session list must not abort real work.
+func (w *Workflow) beginSession(run *domain.Run, task *domain.Task) *RunSession {
+	if w.sessions == nil {
+		return nil
+	}
+	rs := NewRunSession(run, task, repoRoot())
+	desc, err := rs.Describe(context.Background())
+	if err != nil {
+		return nil
+	}
+	if err := w.sessions.Register(desc, rs); err != nil {
+		charmlog.Warn("session registration failed", "run_id", run.ID, "error", err)
+		return nil
+	}
+	return rs
+}
+
+// syncSession pushes a run session's current descriptor to the registry so
+// the switcher reflects the run without polling.
+func (w *Workflow) syncSession(rs *RunSession) {
+	if w.sessions == nil || rs == nil {
+		return
+	}
+	if desc, err := rs.Describe(context.Background()); err == nil {
+		_ = w.sessions.Update(desc)
+	}
 }
 
 // New wires a Workflow from a loaded ariadne.toml Config: enabled providers,
 // the configured work source, the router, the supervisor, the proof
 // collector, and the task poller.
 func New(cfg *config.Config) (*Workflow, error) {
+	source, err := buildWorkSource(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithSource(cfg, source)
+}
+
+// NewWithSource wires a Workflow against a caller-supplied work source. It
+// is how the harness runs ad-hoc tasks: a task typed into the interface
+// goes through the same routing, worktree isolation, supervision, and proof
+// collection as one claimed from an issue tracker, rather than growing a
+// second and less careful way to run an agent.
+func NewWithSource(cfg *config.Config, source worksource.WorkSource) (*Workflow, error) {
 	providers := buildProviders(cfg)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("issueworkflow: no enabled providers configured")
 	}
-
-	source, err := buildWorkSource(cfg)
-	if err != nil {
-		return nil, err
+	if source == nil {
+		return nil, fmt.Errorf("issueworkflow: nil work source")
 	}
 
 	rt := router.NewWithPersonas(
@@ -187,6 +241,17 @@ func (w *Workflow) executeRace(ctx context.Context, task *domain.Task, route rou
 
 func (w *Workflow) executeRun(ctx context.Context, task *domain.Task, p provider.AgentProvider, persona *config.PersonaConfig, log *charmlog.Logger) {
 	run := &domain.Run{ID: newRunID(), TaskID: task.ID, Provider: p.Name()}
+
+	rs := w.beginSession(run, task)
+	if rs != nil {
+		personaName := ""
+		if persona != nil {
+			personaName = persona.Name
+		}
+		rs.Started(p.Name(), personaName)
+		w.syncSession(rs)
+	}
+
 	result := w.supervisor.Execute(ctx, supervisor.RunRequest{
 		Run:          run,
 		Task:         task,
@@ -196,6 +261,11 @@ func (w *Workflow) executeRun(ctx context.Context, task *domain.Task, p provider
 		ReviewSource: w.source,
 		TokenSource:  tokenSource(w.source),
 	})
+	if rs != nil {
+		rs.Finished(result.Err)
+		w.syncSession(rs)
+	}
+
 	if result.Err != nil {
 		log.Error("run failed", "run_id", run.ID, "error", result.Err)
 		switch task.Type {

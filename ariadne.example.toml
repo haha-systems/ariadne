@@ -98,6 +98,18 @@ workflow_file = ".ariadne/WORKFLOW.md"
 # Point at a Ghostdive instance to persist observations/hypotheses/decisions
 # across runs (GHOSTDIVE_API_KEY env var supplies the API key):
 #
+# A research run validates its memory backend before the first invocation:
+# credentials, project->space mapping, and one lightweight authenticated
+# read. If that check fails the run refuses to start, because a research
+# pass whose writes all fail costs full tokens and accumulates nothing.
+#
+# Set allow_inmemory_fallback to true to accept that loss and continue
+# against in-memory storage instead. The fallback is logged loudly, and all
+# research state from the run is discarded when the process exits.
+#
+# [memory]
+# allow_inmemory_fallback = false
+#
 # [memory.ghostdive]
 # base_url = "http://localhost:8080"
 # [memory.ghostdive.space_id_by_project]

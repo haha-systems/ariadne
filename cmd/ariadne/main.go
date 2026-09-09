@@ -31,10 +31,24 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ariadne",
 		Short: "Multi-provider coding agent orchestrator",
+		Long: "Ariadne runs coding agents against a work source and a research\n" +
+			"programme, and shows both in one interface.\n\n" +
+			"Run `ariadne` with no arguments to open that interface.",
+		// Bare `ariadne` opens the harness. A tool whose whole job is
+		// running long-lived work should show you that work when you run
+		// it, rather than printing help and exiting.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown command %q — run `ariadne --help`", args[0])
+			}
+			return harnessCmd(&cfgPath).RunE(cmd, args)
+		},
+		SilenceUsage: true,
 	}
 	root.PersistentFlags().StringVar(&cfgPath, "config", "ariadne.toml", "path to ariadne.toml")
 
 	root.AddCommand(
+		harnessCmd(&cfgPath),
 		runCmd(&cfgPath),
 		collectProofCmd(&cfgPath),
 		landCmd(&cfgPath),

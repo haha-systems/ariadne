@@ -1,6 +1,55 @@
 # Ariadne
 
-Ariadne is a multi-provider coding agent orchestrator. It polls a work source (GitHub Issues or Linear), dispatches tasks to one or more AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode, or a custom binary), and posts proof-of-work summaries back to the originating issue.
+Ariadne is a multi-provider coding agent orchestrator. It polls a work source (GitHub Issues or Linear), dispatches tasks to one or more AI coding agents (Claude Code, Codex, Gemini CLI, OpenCode, or a custom binary), and posts proof-of-work summaries back to the originating issue. It also runs research programmes under a quota-aware escalation policy.
+
+Both show up in one place. Run `ariadne` with no arguments:
+
+```
+ariadne
+```
+
+```
+ariadne | 2 sessions | no session attached
+╭─ SESSIONS ────────────────────────────────╮╭─ SESSION DETAIL ─────────╮
+│ >   ● ISSUE     fix login redirect        ││ fix login redirect       │
+│     ● RESEARCH  arachne     cycle 14 · ari││ issue:run_88             │
+│                                           ││                          │
+│                                           ││ kind     ISSUE           │
+│                                           ││ state    RUNNING         │
+│                                           ││ doing    running on claude│
+╰───────────────────────────────────────────╯╰──────────────────────────╯
+j/k move  enter attach  1-5 session views  ? help  q quit
+```
+
+## The harness
+
+Every unit of agent work is a **session**: a claimed issue being executed in
+a worktree, or a research programme cycling under QAC. Press `0` for the
+session list, `enter` to attach, `1`–`5` for that session's views.
+
+You can also start work here. Press `n` on the session list (or `/new …`
+from anywhere), describe the task in prose, and it runs — routed to a
+provider, isolated in a worktree, supervised and proved exactly like a task
+claimed from an issue tracker. There is no second, looser path for running
+an agent.
+
+A session declares which surfaces it has, and the interface offers only
+those. A research programme is steerable, pausable, and has memory and
+escalations; an issue run streams its output and has none of those, so
+pressing `s` on one tells you it has no steering rather than appearing to
+work and doing nothing.
+
+Quitting the interface does not end the work. On quit you choose between
+pausing at the next safe boundary or detaching and leaving the run going —
+pausing never kills an invocation that has already cost real quota.
+
+| Command | What it does |
+|---------|--------------|
+| `ariadne` | Open the harness over every session |
+| `ariadne --no-poll` | Open the harness for ad-hoc tasks only, without polling for issues |
+| `ariadne run` | Headless polling loop, no interface — for CI and daemons |
+| `ariadne research run <project>` | Start a research programme |
+| `ariadne research tui <project>` | Attach to one research programme |
 
 ## How it works
 
@@ -155,6 +204,34 @@ ariadne [--config ariadne.toml] <command>
 | `collect-proof --run-id <id>`   | Print the proof bundle for a completed run           |
 | `land --run-id <id>`            | Rebase, re-run CI, and merge a reviewed run          |
 | `cost`                          | Show USD cost summary for all completed runs         |
+| `agents`                        | List configured agent profiles                       |
+| `budget`                        | Show configured QAC escalation budget limits         |
+| `research run <project>`        | Run the Ari -> QAC -> Astra research cycle           |
+| `research tui <project>`        | Watch and steer a research project interactively     |
+| `research status <project>`     | Show a project's frontier and recent events          |
+| `research frontier <project>`   | Print a project's current research frontier          |
+| `research guidance <project>`   | Print the durable guidance a project's prompts use   |
+
+### Interactive research
+
+`ariadne research tui <project>` runs the same research loop as `research run`,
+with a terminal interface over it:
+
+- watch the current frontier, hypotheses, and open questions;
+- follow Ari's and Astra's live output on separate logs;
+- read the structured event timeline;
+- inspect why QAC approved or denied each escalation, with the scoring
+  factors and the budget at the time of the decision;
+- approve (`a`) or deny (`d`) escalations when QAC is in manual mode;
+- steer the programme (`s`) — the instruction is persisted, reaches the next
+  agent turn, and is then marked applied;
+- pause (`p`) and resume (`r`).
+
+Pausing stops the loop at its next cycle boundary rather than killing a
+running agent, so work that has already cost quota is never discarded.
+Quitting the interface does not end the run: you are offered a pause-then-exit
+or a detach. Every one of these operations exists in the runtime, not in the
+interface, so the CLI stays fully capable on its own.
 
 ## Work sources
 

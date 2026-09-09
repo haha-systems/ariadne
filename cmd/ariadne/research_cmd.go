@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +27,7 @@ func researchCmd(cfgPath *string) *cobra.Command {
 		Use:   "research",
 		Short: "Run and inspect research workflow projects",
 	}
-	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath), researchGuidanceCmd(cfgPath))
+	root.AddCommand(researchRunCmd(cfgPath), researchStatusCmd(cfgPath), researchFrontierCmd(cfgPath), researchGuidanceCmd(cfgPath), researchTuiCmd(cfgPath))
 	return root
 }
 
@@ -231,6 +232,52 @@ func buildMemoryStore(cfg *config.Config) (memory.Store, error) {
 	return ghostdive.NewAdapter(client, cfg.Memory.Ghostdive.SpaceIDByProject, filepath.Join(".ariadne", "research")), nil
 }
 
+// resolveResearchMemory picks the memory backend for a research run and
+// proves it works before the run starts, returning the store and whether
+// persistence failures should be fatal.
+//
+// A research run is expensive and its whole value is cumulative, so an
+// unusable memory backend is checked here rather than discovered on the
+// first write. The observed failure was Ghostdive returning 401: every
+// write failed, nothing persisted, and each cycle restarted from an empty
+// frontier while still paying full token cost. Preflight turns that into an
+// error before the first invocation.
+//
+// Falling back to in-memory storage requires an explicit opt-in
+// ([memory] allow_inmemory_fallback = true) and is logged, because it
+// silently discards research state at the end of the process.
+func resolveResearchMemory(ctx context.Context, cfg *config.Config, project string, logw io.Writer) (memory.Store, bool, error) {
+	store, err := buildMemoryStore(cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	if cfg.Memory.Ghostdive == nil {
+		return store, false, nil // in-memory backend: nothing to validate, nothing durable to protect
+	}
+
+	if os.Getenv("GHOSTDIVE_API_KEY") == "" {
+		err = fmt.Errorf("GHOSTDIVE_API_KEY is not set but [memory.ghostdive] is configured")
+	} else {
+		err = memory.Preflight(ctx, store, project)
+	}
+	if err == nil {
+		return store, true, nil
+	}
+
+	if !cfg.Memory.AllowInmemoryFallback {
+		return nil, false, fmt.Errorf(
+			"research memory preflight failed for project %q: %w\n"+
+				"Refusing to start an expensive research run against unusable persistent memory.\n"+
+				"Fix the Ghostdive configuration, or set [memory] allow_inmemory_fallback = true to accept losing research state at process exit",
+			project, err)
+	}
+
+	fmt.Fprintf(logw, "WARNING: Ghostdive preflight failed for project %q: %v\n", project, err)
+	fmt.Fprintf(logw, "WARNING: falling back to in-memory storage ([memory] allow_inmemory_fallback = true). "+
+		"All research state from this run will be LOST when the process exits.\n")
+	return inmemory.New(), false, nil
+}
+
 // buildProviderForProfile constructs the provider.AgentProvider an
 // agentprofile.Profile names, reusing the same provider-type switch as the
 // issue workflow's buildProviders (kept separate rather than exported,
@@ -299,7 +346,7 @@ func buildResearchLoop(cfg *config.Config, project string) (*research.AriLoop, f
 		return nil, nil, fmt.Errorf("acquire research workspace: %w", err)
 	}
 
-	store, err := buildMemoryStore(cfg)
+	store, strictPersistence, err := resolveResearchMemory(context.Background(), cfg, project, os.Stderr)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -329,7 +376,12 @@ func buildResearchLoop(cfg *config.Config, project string) (*research.AriLoop, f
 		Events:           events,
 		AriProfileName:   projCfg.RoutineAgent,
 		AstraProfileName: projCfg.FrontierAgent,
-		Guidance:         loadResearchGuidance(projCfg, project),
+		// Model names are passed through purely as event-log labels; the
+		// loop never schedules on them (see AriLoop.AriModel).
+		AriModel:          cfg.AgentProfiles[projCfg.RoutineAgent].Model,
+		AstraModel:        cfg.AgentProfiles[projCfg.FrontierAgent].Model,
+		Guidance:          loadResearchGuidance(projCfg, project),
+		StrictPersistence: strictPersistence,
 	}
 
 	cleanup := func() {

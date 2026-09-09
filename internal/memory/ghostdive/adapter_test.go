@@ -20,6 +20,7 @@ type fakeClient struct {
 	nextID      int
 	observeErr  error
 	getErr      error
+	retrieveErr error
 }
 
 func newFakeClient() *fakeClient {
@@ -48,6 +49,9 @@ func (f *fakeClient) Observe(_ context.Context, _ string, req ObserveRequest) (R
 }
 
 func (f *fakeClient) Retrieve(_ context.Context, _ string, req RetrieveRequest) ([]Hit, error) {
+	if f.retrieveErr != nil {
+		return nil, f.retrieveErr
+	}
 	var hits []Hit
 	for _, rec := range f.records {
 		if len(req.Layers) > 0 && !containsStr(req.Layers, rec.Layer) {
@@ -310,4 +314,47 @@ func TestAdapter_WriteFrontierNeverTouchesOtherRecords(t *testing.T) {
 	if raw.Summary != "parity holds" {
 		t.Errorf("observation Summary mutated: %q", raw.Summary)
 	}
+}
+
+// Preflight is the gate that turns an unusable Ghostdive configuration into
+// a cheap up-front error instead of a research run whose every write fails.
+
+func TestAdapter_Preflight_UnmappedProjectFails(t *testing.T) {
+	a := NewAdapter(newFakeClient(), map[string]string{"p1": "space-1"}, t.TempDir())
+
+	err := a.Preflight(context.Background(), "not-configured")
+	if err == nil {
+		t.Fatal("expected preflight to fail for a project with no configured space")
+	}
+	if !strings.Contains(err.Error(), "not-configured") {
+		t.Errorf("expected the error to name the project, got %v", err)
+	}
+}
+
+func TestAdapter_Preflight_AuthFailurePropagates(t *testing.T) {
+	client := newFakeClient()
+	client.retrieveErr = &APIError{StatusCode: 401, Code: "unauthorized", Message: "invalid api key"}
+	a := NewAdapter(client, map[string]string{"p1": "space-1"}, t.TempDir())
+
+	err := a.Preflight(context.Background(), "p1")
+	if err == nil {
+		t.Fatal("expected preflight to fail when the authenticated read is rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid api key") {
+		t.Errorf("expected the underlying API error to be wrapped, got %v", err)
+	}
+}
+
+// An empty space is a perfectly healthy backend — a project simply has no
+// memories on its first run — so preflight must not treat it as a failure.
+func TestAdapter_Preflight_EmptySpaceSucceeds(t *testing.T) {
+	a := NewAdapter(newFakeClient(), map[string]string{"p1": "space-1"}, t.TempDir())
+
+	if err := a.Preflight(context.Background(), "p1"); err != nil {
+		t.Errorf("Preflight() error = %v, want nil for an empty but reachable space", err)
+	}
+}
+
+func TestAdapter_SatisfiesPreflighter(t *testing.T) {
+	var _ memory.Preflighter = NewAdapter(newFakeClient(), nil, t.TempDir())
 }

@@ -153,3 +153,11 @@ func plentifulFallback(options []Action) (Action, bool) {
 	}
 	return best, found
 }
+
+// BudgetSnapshot exposes the scheduler's current quota state so callers can
+// record *why* an escalation decision went the way it did — a denial for
+// "budget exhausted" is only interpretable alongside the counts that
+// exhausted it.
+func (s *Scheduler) BudgetSnapshot() BudgetSnapshot {
+	return s.budget.Snapshot()
+}
